@@ -1,0 +1,63 @@
+{
+  "name": "@randajan/charon",
+  "version": "1.0.0",
+  "description": "Lightweight asynchronous locks and keyed transaction queues for JavaScript",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/randajan/charon.git"
+  },
+  "type": "module",
+  "main": "./dist/cjs/index.cjs",
+  "module": "./dist/esm/index.mjs",
+  "types": "./dist/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "import": "./dist/esm/index.mjs",
+      "require": "./dist/cjs/index.cjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "start": "node ./index.js",
+    "build": "node ./index.js isBuild=true",
+    "prepack": "npm run build",
+    "pack:dry": "npm pack --dry-run"
+  },
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT",
+  "keywords": [
+    "async",
+    "concurrency",
+    "lock",
+    "mutex",
+    "queue",
+    "promise",
+    "serialization",
+    "synchronization",
+    "transaction"
+  ],
+  "devDependencies": {
+    "@randajan/simple-lib": "^5.0.1"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "homepage": "https://github.com/randajan/charon#readme",
+  "bugs": {
+    "url": "https://github.com/randajan/charon/issues"
+  },
+  "author": {
+    "name": "Jan Randa",
+    "email": "jnranda@gmail.com",
+    "url": "https://www.linkedin.com/in/randajan/"
+  },
+  "dependencies": {
+    "@randajan/bounce": "^1.0.1"
+  }
+}
