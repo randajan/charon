@@ -16,7 +16,7 @@ export class Charon {
         let lock;
 
         const onClose = (lock, hasNext) => {
-            if (hasNext && this.#locks.get(id) === lock) {
+            if (!hasNext && this.#locks.get(id) === lock) {
                 this.#locks.delete(id);
             }
             this.#cfg.onClose?.(this, { lock, id, hasNext });

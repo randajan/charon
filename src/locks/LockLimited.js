@@ -24,7 +24,7 @@ export class LockLimited extends LockUnlimited {
 
     getOptMs(msName, opt, txOptFallback=false) {
         const ms = validateTimeout(opt?.[msName], `Lock opt.${msName}`);
-        if (ms !== null) { return ms; }
+        if (ms != null) { return ms; }
         const txMs = txOptFallback ? this.#tx?.opt[msName] : undefined;
         return txMs ?? this.cfg[msName];
     }

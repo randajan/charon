@@ -302,7 +302,7 @@ var LockLimited = class extends LockUnlimited {
   }
   getOptMs(msName, opt, txOptFallback = false) {
     const ms = (0, import_bounce4.validateTimeout)(opt?.[msName], `Lock opt.${msName}`);
-    if (ms !== null) {
+    if (ms != null) {
       return ms;
     }
     const txMs = txOptFallback ? this.#tx?.opt[msName] : void 0;
@@ -426,7 +426,7 @@ var Charon = class {
   #create(id) {
     let lock;
     const onClose = (lock2, hasNext) => {
-      if (hasNext && this.#locks.get(id) === lock2) {
+      if (!hasNext && this.#locks.get(id) === lock2) {
         this.#locks.delete(id);
       }
       this.#cfg.onClose?.(this, { lock: lock2, id, hasNext });

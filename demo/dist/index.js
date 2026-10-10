@@ -1,449 +1,695 @@
-// <define:__slib_info>
-var define_slib_info_default = { isBuild: false, name: "@randajan/bounce", description: "Tiny JavaScript library for collecting tasks and processing them as a single batch", version: "1.0.1", author: { name: "Jan Randa", email: "jnranda@gmail.com", url: "https://www.linkedin.com/in/randajan/" }, env: "development", mode: "node", port: 3e3, dir: { root: "/home/randajan/dev/lib/charon", dist: "demo/dist" } };
+// demo/src/index.js
+import assert from "assert/strict";
 
-// node_modules/chalk/source/vendor/ansi-styles/index.js
-var ANSI_BACKGROUND_OFFSET = 10;
-var wrapAnsi16 = (offset = 0) => (code) => `\x1B[${code + offset}m`;
-var wrapAnsi256 = (offset = 0) => (code) => `\x1B[${38 + offset};5;${code}m`;
-var wrapAnsi16m = (offset = 0) => (red, green, blue) => `\x1B[${38 + offset};2;${red};${green};${blue}m`;
-var styles = {
-  modifier: {
-    reset: [0, 0],
-    // 21 isn't widely supported and 22 does the same thing
-    bold: [1, 22],
-    dim: [2, 22],
-    italic: [3, 23],
-    underline: [4, 24],
-    overline: [53, 55],
-    inverse: [7, 27],
-    hidden: [8, 28],
-    strikethrough: [9, 29]
-  },
-  color: {
-    black: [30, 39],
-    red: [31, 39],
-    green: [32, 39],
-    yellow: [33, 39],
-    blue: [34, 39],
-    magenta: [35, 39],
-    cyan: [36, 39],
-    white: [37, 39],
-    // Bright color
-    blackBright: [90, 39],
-    gray: [90, 39],
-    // Alias of `blackBright`
-    grey: [90, 39],
-    // Alias of `blackBright`
-    redBright: [91, 39],
-    greenBright: [92, 39],
-    yellowBright: [93, 39],
-    blueBright: [94, 39],
-    magentaBright: [95, 39],
-    cyanBright: [96, 39],
-    whiteBright: [97, 39]
-  },
-  bgColor: {
-    bgBlack: [40, 49],
-    bgRed: [41, 49],
-    bgGreen: [42, 49],
-    bgYellow: [43, 49],
-    bgBlue: [44, 49],
-    bgMagenta: [45, 49],
-    bgCyan: [46, 49],
-    bgWhite: [47, 49],
-    // Bright color
-    bgBlackBright: [100, 49],
-    bgGray: [100, 49],
-    // Alias of `bgBlackBright`
-    bgGrey: [100, 49],
-    // Alias of `bgBlackBright`
-    bgRedBright: [101, 49],
-    bgGreenBright: [102, 49],
-    bgYellowBright: [103, 49],
-    bgBlueBright: [104, 49],
-    bgMagentaBright: [105, 49],
-    bgCyanBright: [106, 49],
-    bgWhiteBright: [107, 49]
+// dist/esm/index.mjs
+import { Bounce } from "@randajan/bounce";
+import { setTimeoutUnref } from "@randajan/bounce";
+import { setTimeoutUnref as setTimeoutUnref2 } from "@randajan/bounce";
+import { validateTimeout } from "@randajan/bounce";
+var SerialQueue = class {
+  #tail = Promise.resolve();
+  #size = 0;
+  get size() {
+    return this.#size;
+  }
+  get idle() {
+    return this.#size === 0;
+  }
+  add(callback) {
+    this.#size++;
+    const task = this.#tail.then(callback).finally(() => {
+      this.#size--;
+    });
+    this.#tail = task.then(() => void 0, () => void 0);
+    return task;
+  }
+  drain() {
+    return this.#tail;
   }
 };
-var modifierNames = Object.keys(styles.modifier);
-var foregroundColorNames = Object.keys(styles.color);
-var backgroundColorNames = Object.keys(styles.bgColor);
-var colorNames = [...foregroundColorNames, ...backgroundColorNames];
-function assembleStyles() {
-  const codes = /* @__PURE__ */ new Map();
-  for (const [groupName, group] of Object.entries(styles)) {
-    for (const [styleName, style] of Object.entries(group)) {
-      styles[styleName] = {
-        open: `\x1B[${style[0]}m`,
-        close: `\x1B[${style[1]}m`
-      };
-      group[styleName] = styles[styleName];
-      codes.set(style[0], style[1]);
+var validObj = (obj, require2 = false, label = "") => {
+  if (obj && typeof obj === "object" && !Array.isArray(obj)) {
+    return obj;
+  }
+  if (obj == null && !require2) {
+    return;
+  }
+  throw TypeError(`${label} must be type of object`);
+};
+var validFn = (fn, require2 = false, label = "") => {
+  if (typeof fn === "function") {
+    return fn;
+  }
+  if (fn == null && !require2) {
+    return;
+  }
+  throw TypeError(`${label} must be type of function`);
+};
+var LockGate = class {
+  #cfg;
+  #state = false;
+  #currentKey;
+  #queue = [];
+  #generateKey;
+  #onClose;
+  constructor(cfg = {}) {
+    const { generateKey, onClose, ...passCfg } = validObj(cfg, true, "Lock cfg");
+    this.#generateKey = validFn(generateKey, true, "cfg.generateKey");
+    this.#onClose = validFn(onClose, false, "cfg.onClose");
+    passCfg.throwError = !!passCfg.throwError;
+    this.#cfg = Object.freeze(passCfg);
+  }
+  get cfg() {
+    return this.#cfg;
+  }
+  get size() {
+    return this.#queue.length;
+  }
+  get state() {
+    return this.#state;
+  }
+  getOptThrowError(opt) {
+    return opt?.throwError != null ? !!opt.throwError : this.cfg.throwError;
+  }
+  #setKey(state) {
+    this.#state = state = !!state;
+    return this.#currentKey = state ? this.#generateKey() : void 0;
+  }
+  checkTx(key, opt) {
+    if (key === this.#currentKey) {
+      return true;
     }
-    Object.defineProperty(styles, groupName, {
-      value: group,
-      enumerable: false
+    if (!this.getOptThrowError(opt)) {
+      return false;
+    }
+    throw new Error(`Lock '${key}' is unknown`);
+  }
+  async openTx(opt) {
+    if (!this.#state) {
+      return this.#setKey(true);
+    }
+    return new Promise((resolve) => {
+      this.#queue.push(resolve);
     });
   }
-  Object.defineProperty(styles, "codes", {
-    value: codes,
-    enumerable: false
-  });
-  styles.color.close = "\x1B[39m";
-  styles.bgColor.close = "\x1B[49m";
-  styles.color.ansi = wrapAnsi16();
-  styles.color.ansi256 = wrapAnsi256();
-  styles.color.ansi16m = wrapAnsi16m();
-  styles.bgColor.ansi = wrapAnsi16(ANSI_BACKGROUND_OFFSET);
-  styles.bgColor.ansi256 = wrapAnsi256(ANSI_BACKGROUND_OFFSET);
-  styles.bgColor.ansi16m = wrapAnsi16m(ANSI_BACKGROUND_OFFSET);
-  Object.defineProperties(styles, {
-    rgbToAnsi256: {
-      value(red, green, blue) {
-        if (red === green && green === blue) {
-          if (red < 8) {
-            return 16;
-          }
-          if (red > 248) {
-            return 231;
-          }
-          return Math.round((red - 8) / 247 * 24) + 232;
-        }
-        return 16 + 36 * Math.round(red / 255 * 5) + 6 * Math.round(green / 255 * 5) + Math.round(blue / 255 * 5);
-      },
-      enumerable: false
-    },
-    hexToRgb: {
-      value(hex) {
-        const matches = /[a-f\d]{6}|[a-f\d]{3}/i.exec(hex.toString(16));
-        if (!matches) {
-          return [0, 0, 0];
-        }
-        let [colorString] = matches;
-        if (colorString.length === 3) {
-          colorString = [...colorString].map((character) => character + character).join("");
-        }
-        const integer = Number.parseInt(colorString, 16);
-        return [
-          /* eslint-disable no-bitwise */
-          integer >> 16 & 255,
-          integer >> 8 & 255,
-          integer & 255
-          /* eslint-enable no-bitwise */
-        ];
-      },
-      enumerable: false
-    },
-    hexToAnsi256: {
-      value: (hex) => styles.rgbToAnsi256(...styles.hexToRgb(hex)),
-      enumerable: false
-    },
-    ansi256ToAnsi: {
-      value(code) {
-        if (code < 8) {
-          return 30 + code;
-        }
-        if (code < 16) {
-          return 90 + (code - 8);
-        }
-        let red;
-        let green;
-        let blue;
-        if (code >= 232) {
-          red = ((code - 232) * 10 + 8) / 255;
-          green = red;
-          blue = red;
-        } else {
-          code -= 16;
-          const remainder = code % 36;
-          red = Math.floor(code / 36) / 5;
-          green = Math.floor(remainder / 6) / 5;
-          blue = remainder % 6 / 5;
-        }
-        const value = Math.max(red, green, blue) * 2;
-        if (value === 0) {
-          return 30;
-        }
-        let result = 30 + (Math.round(blue) << 2 | Math.round(green) << 1 | Math.round(red));
-        if (value === 2) {
-          result += 60;
-        }
-        return result;
-      },
-      enumerable: false
-    },
-    rgbToAnsi: {
-      value: (red, green, blue) => styles.ansi256ToAnsi(styles.rgbToAnsi256(red, green, blue)),
-      enumerable: false
-    },
-    hexToAnsi: {
-      value: (hex) => styles.ansi256ToAnsi(styles.hexToAnsi256(hex)),
-      enumerable: false
+  closeTx(key, opt) {
+    if (!this.checkTx(key, opt)) {
+      return false;
     }
-  });
-  return styles;
-}
-var ansiStyles = assembleStyles();
-var ansi_styles_default = ansiStyles;
-
-// node_modules/chalk/source/vendor/supports-color/browser.js
-var level = (() => {
-  if (!("navigator" in globalThis)) {
-    return 0;
-  }
-  if (globalThis.navigator.userAgentData) {
-    const brand = navigator.userAgentData.brands.find(({ brand: brand2 }) => brand2 === "Chromium");
-    if (brand && brand.version > 93) {
-      return 3;
+    const next = this.#queue.shift();
+    const hasNext = !!next;
+    const newKey = this.#setKey(hasNext);
+    if (hasNext) {
+      next(newKey);
     }
-  }
-  if (/\b(Chrome|Chromium)\//.test(globalThis.navigator.userAgent)) {
-    return 1;
-  }
-  return 0;
-})();
-var colorSupport = level !== 0 && {
-  level,
-  hasBasic: true,
-  has256: level >= 2,
-  has16m: level >= 3
-};
-var supportsColor = {
-  stdout: colorSupport,
-  stderr: colorSupport
-};
-var browser_default = supportsColor;
-
-// node_modules/chalk/source/utilities.js
-function stringReplaceAll(string, substring, replacer) {
-  let index = string.indexOf(substring);
-  if (index === -1) {
-    return string;
-  }
-  const substringLength = substring.length;
-  let endIndex = 0;
-  let returnValue = "";
-  do {
-    returnValue += string.slice(endIndex, index) + substring + replacer;
-    endIndex = index + substringLength;
-    index = string.indexOf(substring, endIndex);
-  } while (index !== -1);
-  returnValue += string.slice(endIndex);
-  return returnValue;
-}
-function stringEncaseCRLFWithFirstIndex(string, prefix, postfix, index) {
-  let endIndex = 0;
-  let returnValue = "";
-  do {
-    const gotCR = string[index - 1] === "\r";
-    returnValue += string.slice(endIndex, gotCR ? index - 1 : index) + prefix + (gotCR ? "\r\n" : "\n") + postfix;
-    endIndex = index + 1;
-    index = string.indexOf("\n", endIndex);
-  } while (index !== -1);
-  returnValue += string.slice(endIndex);
-  return returnValue;
-}
-
-// node_modules/chalk/source/index.js
-var { stdout: stdoutColor, stderr: stderrColor } = browser_default;
-var GENERATOR = /* @__PURE__ */ Symbol("GENERATOR");
-var STYLER = /* @__PURE__ */ Symbol("STYLER");
-var IS_EMPTY = /* @__PURE__ */ Symbol("IS_EMPTY");
-var levelMapping = [
-  "ansi",
-  "ansi",
-  "ansi256",
-  "ansi16m"
-];
-var styles2 = /* @__PURE__ */ Object.create(null);
-var applyOptions = (object, options = {}) => {
-  if (options.level && !(Number.isInteger(options.level) && options.level >= 0 && options.level <= 3)) {
-    throw new Error("The `level` option should be an integer from 0 to 3");
-  }
-  const colorLevel = stdoutColor ? stdoutColor.level : 0;
-  object.level = options.level === void 0 ? colorLevel : options.level;
-};
-var chalkFactory = (options) => {
-  const chalk2 = (...strings) => strings.join(" ");
-  applyOptions(chalk2, options);
-  Object.setPrototypeOf(chalk2, createChalk.prototype);
-  return chalk2;
-};
-function createChalk(options) {
-  return chalkFactory(options);
-}
-Object.setPrototypeOf(createChalk.prototype, Function.prototype);
-for (const [styleName, style] of Object.entries(ansi_styles_default)) {
-  styles2[styleName] = {
-    get() {
-      const builder = createBuilder(this, createStyler(style.open, style.close, this[STYLER]), this[IS_EMPTY]);
-      Object.defineProperty(this, styleName, { value: builder });
-      return builder;
-    }
-  };
-}
-styles2.visible = {
-  get() {
-    const builder = createBuilder(this, this[STYLER], true);
-    Object.defineProperty(this, "visible", { value: builder });
-    return builder;
+    this.#onClose?.(this, hasNext);
+    return true;
   }
 };
-var getModelAnsi = (model, level2, type, ...arguments_) => {
-  if (model === "rgb") {
-    if (level2 === "ansi16m") {
-      return ansi_styles_default[type].ansi16m(...arguments_);
+var LockUnlimited = class _LockUnlimited extends LockGate {
+  static optWithoutThrowError(opt) {
+    if (!opt) {
+      return;
     }
-    if (level2 === "ansi256") {
-      return ansi_styles_default[type].ansi256(ansi_styles_default.rgbToAnsi256(...arguments_));
+    const { throwError, ...passOpt } = opt;
+    return passOpt;
+  }
+  #ops = new SerialQueue();
+  #closing = false;
+  get state() {
+    if (!super.state) {
+      return "ready";
     }
-    return ansi_styles_default[type].ansi(ansi_styles_default.rgbToAnsi(...arguments_));
+    return this.#ops.idle ? "idle" : "busy";
   }
-  if (model === "hex") {
-    return getModelAnsi("rgb", level2, type, ...ansi_styles_default.hexToRgb(...arguments_));
+  isState(state) {
+    return this.state === state;
   }
-  return ansi_styles_default[type][model](...arguments_);
+  async openTx(opt) {
+    const key = await super.openTx(opt);
+    this.#closing = false;
+    return key;
+  }
+  async closeTx(key, opt) {
+    if (!this.checkTx(key, opt)) {
+      return false;
+    }
+    this.#closing = true;
+    await this.#ops.drain();
+    return super.closeTx(key, opt);
+  }
+  async runInTx(key, op, opt) {
+    if (!this.checkTx(key, opt)) {
+      return false;
+    }
+    if (this.#closing) {
+      if (!this.getOptThrowError(opt)) {
+        return false;
+      }
+      throw new Error(`Lock '${key}' is closing`);
+    }
+    return this.#ops.add(op);
+  }
+  async run(op, opt) {
+    const key = await this.openTx(opt);
+    try {
+      return await this.runInTx(key, op, opt);
+    } finally {
+      await this.closeTx(key, _LockUnlimited.optWithoutThrowError(opt));
+    }
+  }
+  async runTx(tx, opt) {
+    const key = await this.openTx(opt);
+    const run = (op, opt2) => this.runInTx(key, op, opt2);
+    try {
+      return await tx(run);
+    } finally {
+      await this.closeTx(key, _LockUnlimited.optWithoutThrowError(opt));
+    }
+  }
 };
-var usedModels = ["rgb", "hex", "ansi256"];
-for (const model of usedModels) {
-  styles2[model] = {
-    get() {
-      const { level: level2 } = this;
-      return function(...arguments_) {
-        const styler = createStyler(getModelAnsi(model, levelMapping[level2], "color", ...arguments_), ansi_styles_default.color.close, this[STYLER]);
-        return createBuilder(this, styler, this[IS_EMPTY]);
-      };
-    }
-  };
-  const bgModel = "bg" + model[0].toUpperCase() + model.slice(1);
-  styles2[bgModel] = {
-    get() {
-      const { level: level2 } = this;
-      return function(...arguments_) {
-        const styler = createStyler(getModelAnsi(model, levelMapping[level2], "bgColor", ...arguments_), ansi_styles_default.bgColor.close, this[STYLER]);
-        return createBuilder(this, styler, this[IS_EMPTY]);
-      };
-    }
-  };
-}
-var proto = Object.defineProperties(() => {
-}, {
-  ...styles2,
-  level: {
-    enumerable: true,
-    get() {
-      return this[GENERATOR].level;
-    },
-    set(level2) {
-      this[GENERATOR].level = level2;
-    }
-  }
-});
-var createStyler = (open, close, parent) => {
-  let openAll;
-  let closeAll;
-  if (parent === void 0) {
-    openAll = open;
-    closeAll = close;
-  } else {
-    openAll = parent.openAll + open;
-    closeAll = close + parent.closeAll;
-  }
-  return {
-    open,
-    close,
-    openAll,
-    closeAll,
-    parent
-  };
-};
-var createBuilder = (self, _styler, _isEmpty) => {
-  const builder = (...arguments_) => applyStyle(builder, arguments_.length === 1 ? "" + arguments_[0] : arguments_.join(" "));
-  Object.setPrototypeOf(builder, proto);
-  builder[GENERATOR] = self;
-  builder[STYLER] = _styler;
-  builder[IS_EMPTY] = _isEmpty;
-  return builder;
-};
-var applyStyle = (self, string) => {
-  if (self.level <= 0 || !string) {
-    return self[IS_EMPTY] ? "" : string;
-  }
-  let styler = self[STYLER];
-  if (styler === void 0) {
-    return string;
-  }
-  const { openAll, closeAll } = styler;
-  if (string.includes("\x1B")) {
-    while (styler !== void 0) {
-      string = stringReplaceAll(string, styler.close, styler.open);
-      styler = styler.parent;
-    }
-  }
-  const lfIndex = string.indexOf("\n");
-  if (lfIndex !== -1) {
-    string = stringEncaseCRLFWithFirstIndex(string, closeAll, openAll, lfIndex);
-  }
-  return openAll + string + closeAll;
-};
-Object.defineProperties(createChalk.prototype, styles2);
-var chalk = createChalk();
-var chalkStderr = createChalk({ level: stderrColor ? stderrColor.level : 0 });
-var source_default = chalk;
-
-// node_modules/@randajan/simple-lib/dist/chunk-KF2SC7L5.js
-var chalkProps = Object.getOwnPropertyNames(Object.getPrototypeOf(source_default)).filter((v) => v !== "constructor");
-var Logger = class _Logger extends Function {
-  constructor(formater, chalkInit) {
+var TxContext = class extends AbortController {
+  #opt;
+  #fctid;
+  constructor(opt = {}) {
     super();
-    const chalk2 = chalkInit || source_default;
-    const log2 = (...msgs) => {
-      console.log(chalk2(formater(msgs)));
+    this.#opt = Object.freeze(opt);
+  }
+  get opt() {
+    return this.#opt;
+  }
+  get key() {
+    return this.#opt.key;
+  }
+  touch() {
+    return false;
+  }
+  abort(log, trigger) {
+    if (!this.signal.aborted) {
+      super.abort({ log, trigger });
+    }
+    const { forceCloseMs, onForceClose, unref } = this.#opt;
+    if (forceCloseMs > 0 && this.#fctid == null) {
+      this.#fctid = setTimeoutUnref(onForceClose, forceCloseMs, unref);
+    }
+  }
+  clear() {
+    clearTimeout(this.#fctid);
+    this.#opt.onClear?.(this);
+  }
+};
+var TxContextBounced = class extends TxContext {
+  #bounce;
+  touch(type, ms) {
+    if (this.signal.aborted) {
+      return false;
+    }
+    if (!this.#bounce) {
+      const { totalMs, unref } = this.opt;
+      this.#bounce = new Bounce(this.abort.bind(this), {
+        hardMs: totalMs,
+        unref
+      });
+    }
+    this.#bounce.attach(type, ms);
+    return true;
+  }
+  clear() {
+    super.clear();
+    this.#bounce.flush();
+  }
+};
+var TxContextSimple = class extends TxContext {
+  #tid;
+  #log = [];
+  touch(type) {
+    const { totalMs, opMs, unref } = this.opt;
+    const abortIsHard = totalMs > 0 && (!(opMs > 0) || totalMs <= opMs);
+    const abortTrigger = abortIsHard ? "hard" : "soft";
+    const ms = abortIsHard ? totalMs : opMs;
+    if (ms > 0 && type === "op") {
+      clearTimeout(this.#tid);
+      this.#tid = setTimeoutUnref2((_) => this.abort(this.#log, abortTrigger), ms, unref);
+    }
+    this.#log.push(type);
+    return true;
+  }
+  clear() {
+    super.clear();
+    clearTimeout(this.#tid);
+  }
+};
+var LockLimited = class extends LockUnlimited {
+  #clearTx;
+  #tx;
+  constructor(cfg = {}) {
+    super({
+      ...cfg,
+      totalMs: validateTimeout(cfg.totalMs, "Lock cfg.totalMs"),
+      opMs: validateTimeout(cfg.opMs, "Lock cfg.opMs"),
+      idleMs: validateTimeout(cfg.idleMs, "Lock cfg.idleMs"),
+      forceCloseMs: validateTimeout(cfg.forceCloseMs, "Lock cfg.forceCloseMs"),
+      unref: !!cfg.unref
+    });
+    this.#clearTx = (tx) => {
+      if (this.#tx === tx) {
+        this.#tx = void 0;
+      }
     };
-    const self = Object.setPrototypeOf(log2.bind(), new.target.prototype);
-    for (const prop of chalkProps) {
-      Object.defineProperty(self, prop, { get: (_) => new _Logger(formater, chalk2[prop]), enumerable: false });
+  }
+  getOptMs(msName, opt, txOptFallback = false) {
+    const ms = validateTimeout(opt?.[msName], `Lock opt.${msName}`);
+    if (ms != null) {
+      return ms;
     }
-    return self;
+    const txMs = txOptFallback ? this.#tx?.opt[msName] : void 0;
+    return txMs ?? this.cfg[msName];
   }
-};
-var logger = (...prefixes) => {
-  const now = (_) => (/* @__PURE__ */ new Date()).toLocaleTimeString("cs-CZ");
-  prefixes = prefixes.filter((v) => !!v).join(" ");
-  return new Logger((msgs) => `${prefixes} | ${now()} | ${msgs.join(" ")}`);
-};
-
-// node_modules/@randajan/simple-lib/dist/chunk-XM4YD4K6.js
-var enumerable = true;
-var lockObject = (o) => {
-  if (typeof o !== "object") {
-    return o;
-  }
-  const r = {};
-  for (const i in o) {
-    const descriptor = { enumerable };
-    let val = o[i];
-    if (val instanceof Array) {
-      descriptor.get = (_) => [...val];
-    } else {
-      descriptor.value = lockObject(val);
+  checkTx(key, opt = {}) {
+    if (!super.checkTx(key, opt)) {
+      return false;
     }
-    Object.defineProperty(r, i, descriptor);
+    if (this.#tx?.key === key) {
+      return true;
+    }
+    if (!this.getOptThrowError(opt)) {
+      return false;
+    }
+    throw new Error(`Lock '${key}' unstable state reached.`);
   }
-  return r;
+  #touchTx(key, type, ms, opt = {}) {
+    if (!this.checkTx(key, opt)) {
+      return false;
+    }
+    if (this.#tx.touch(type, ms)) {
+      return true;
+    }
+    if (!this.getOptThrowError(opt)) {
+      return false;
+    }
+    throw new Error(`Lock '${key}' expired`);
+  }
+  async #openTx(TxContextClass, opt = {}) {
+    const { unref } = this.cfg;
+    const totalMs = this.getOptMs("totalMs", opt);
+    const opMs = this.getOptMs("opMs", opt);
+    const idleMs = this.getOptMs("idleMs", opt);
+    const forceCloseMs = this.getOptMs("forceCloseMs", opt);
+    const key = await super.openTx(opt);
+    const noThrowOpt = LockUnlimited.optWithoutThrowError(opt);
+    const tx = this.#tx = new TxContextClass({
+      key,
+      totalMs,
+      idleMs,
+      opMs,
+      forceCloseMs,
+      unref,
+      onForceClose: (_) => this.closeTx(key, noThrowOpt),
+      onClear: this.#clearTx
+    });
+    return tx;
+  }
+  async openTx(opt) {
+    const tx = await this.#openTx(TxContextBounced, opt);
+    const { key, signal, opt: { idleMs } } = tx;
+    tx.touch("idle", idleMs);
+    return { key, signal };
+  }
+  async closeTx(key, opt) {
+    const tx = this.#tx;
+    const closed = await super.closeTx(key, opt);
+    if (closed) {
+      tx?.clear();
+    }
+    return closed;
+  }
+  touchTx(key, opt) {
+    if (!this.isState("idle")) {
+      if (!this.getOptThrowError(opt)) {
+        return false;
+      }
+      throw new Error(`Lock '${key}' is not idle`);
+    }
+    const idleMs = this.getOptMs("idleMs", opt, true);
+    return this.#touchTx(key, "touch", idleMs, opt);
+  }
+  async run(op, opt) {
+    const tx = await this.#openTx(TxContextSimple, opt);
+    const { key, signal } = tx;
+    try {
+      return await super.runInTx(key, () => {
+        tx.touch("op");
+        return op(signal);
+      }, opt);
+    } finally {
+      await this.closeTx(key, LockUnlimited.optWithoutThrowError(opt));
+    }
+  }
+  async runInTx(key, op, opt) {
+    const opMs = this.getOptMs("opMs", opt, true);
+    const idleMs = this.getOptMs("idleMs", opt, true);
+    return super.runInTx(key, async () => {
+      if (!this.#touchTx(key, "op", opMs, opt)) {
+        return false;
+      }
+      try {
+        return await op(this.#tx.signal);
+      } finally {
+        this.#touchTx(key, "idle", idleMs, LockUnlimited.optWithoutThrowError(opt));
+      }
+    }, opt);
+  }
+  async runTx(tx, opt) {
+    const { key, signal } = await this.openTx(opt);
+    const run = (op, opt2) => this.runInTx(key, op, opt2);
+    try {
+      return await tx(run, signal);
+    } finally {
+      await this.closeTx(key, LockUnlimited.optWithoutThrowError(opt));
+    }
+  }
 };
-var info = lockObject(define_slib_info_default);
-
-// node_modules/@randajan/simple-lib/dist/node/index.js
-import { parentPort } from "worker_threads";
-var log = logger(info.name, info.version, info.env);
-parentPort.on("message", (msg) => {
-  if (msg === "shutdown") {
-    process.exit(0);
+var Charon = class {
+  #locks = /* @__PURE__ */ new Map();
+  #cfg;
+  constructor(cfg = {}) {
+    this.#cfg = validObj(cfg, false, "Charon cfg");
   }
+  get size() {
+    return this.#locks.size;
+  }
+  #create(id) {
+    let lock;
+    const onClose = (lock2, hasNext) => {
+      if (!hasNext && this.#locks.get(id) === lock2) {
+        this.#locks.delete(id);
+      }
+      this.#cfg.onClose?.(this, { lock: lock2, id, hasNext });
+    };
+    lock = new LockLimited({ ...this.#cfg, onClose });
+    this.#locks.set(id, lock);
+    return lock;
+  }
+  #getOrAdd(id) {
+    return this.#locks.get(id) ?? this.#create(id);
+  }
+  get(id, opt = {}) {
+    const lock = this.#locks.get(id);
+    if (lock) {
+      return lock;
+    }
+    if (!opt?.throwError) {
+      return;
+    }
+    throw new Error(`Lock '${id}' does not exist`);
+  }
+  has(id, opt = {}) {
+    return !!this.get(id, opt);
+  }
+  async run(id, callback, opt) {
+    return this.#getOrAdd(id).run(callback, opt);
+  }
+  openTx(id, opt) {
+    return this.#getOrAdd(id).openTx(opt);
+  }
+  checkTx(id, key, opt = {}) {
+    const lock = this.get(id, opt);
+    return lock ? lock.checkTx(key, opt) : false;
+  }
+  touchTx(id, key, opt = {}) {
+    const lock = this.get(id, opt);
+    return lock ? lock.touchTx(key, opt) : false;
+  }
+  async runInTx(id, key, callback, opt = {}) {
+    const lock = this.get(id, opt);
+    return lock ? lock.runInTx(key, callback, opt) : false;
+  }
+  closeTx(id, key, opt = {}) {
+    const lock = this.get(id, opt);
+    return lock ? lock.closeTx(key, opt) : false;
+  }
+  async runTx(id, tx, opt = {}) {
+    return this.#getOrAdd(id).runTx(tx, opt);
+  }
+};
+var index_default = Charon;
+
+// demo/src/index.js
+var wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+var waitForAbort = (signal, timeoutMs = 200) => new Promise((resolve, reject) => {
+  if (signal.aborted) {
+    return resolve(signal.reason);
+  }
+  const timeout = setTimeout(() => {
+    reject(new Error("LockLimited did not abort the transaction in time"));
+  }, timeoutMs);
+  signal.addEventListener("abort", () => {
+    clearTimeout(timeout);
+    resolve(signal.reason);
+  }, { once: true });
 });
-process.on("uncaughtException", (e) => {
-  console.log(e.stack);
+var waitUntil = async (predicate, timeoutMs = 200) => {
+  const expiresAt = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= expiresAt) {
+      throw new Error("Condition was not met in time");
+    }
+    await wait(5);
+  }
+};
+var createKeyGenerator = (prefix = "tx") => {
+  let id = 0;
+  return () => `${prefix}-${++id}`;
+};
+var runDemo = async (label, callback) => {
+  process.stdout.write(`
+${label}
+`);
+  await callback();
+  console.log("  \u2713 all checks passed");
+};
+await runDemo("1. SerialQueue runs asynchronous work in order", async () => {
+  const queue = new SerialQueue();
+  const events = [];
+  const first = queue.add(async () => {
+    events.push("first:start");
+    await wait(20);
+    events.push("first:end");
+    return 1;
+  });
+  const second = queue.add(async () => {
+    events.push("second:start");
+    await wait(5);
+    events.push("second:end");
+    return 2;
+  });
+  assert.equal(queue.size, 2);
+  assert.deepEqual(await Promise.all([first, second]), [1, 2]);
+  assert.deepEqual(events, [
+    "first:start",
+    "first:end",
+    "second:start",
+    "second:end"
+  ]);
+  const failed = queue.add(() => {
+    throw new Error("expected demo error");
+  });
+  const afterFailure = queue.add(() => 3);
+  await assert.rejects(failed, /expected demo error/);
+  assert.equal(await afterFailure, 3, "a failed task must not block the queue");
+  await queue.drain();
+  assert.equal(queue.idle, true);
 });
+await runDemo("2. LockGate hands ownership to the next transaction", async () => {
+  const lock = new LockGate({ generateKey: createKeyGenerator("gate") });
+  const firstKey = await lock.openTx();
+  const secondKeyPromise = lock.openTx();
+  assert.equal(firstKey, "gate-1");
+  assert.equal(lock.state, true);
+  assert.equal(lock.size, 1, "the second transaction should be waiting");
+  assert.equal(lock.closeTx("unknown"), false);
+  assert.throws(
+    () => lock.closeTx("unknown", { throwError: true }),
+    /unknown/
+  );
+  assert.equal(lock.closeTx(firstKey), true);
+  const secondKey = await secondKeyPromise;
+  assert.equal(secondKey, "gate-2");
+  assert.equal(lock.size, 0);
+  assert.equal(lock.closeTx(secondKey), true);
+  assert.equal(lock.state, false);
+});
+await runDemo("3. LockUnlimited serializes complete transactions", async () => {
+  const lock = new LockUnlimited({ generateKey: createKeyGenerator("unlimited") });
+  const events = [];
+  const first = lock.run(async () => {
+    events.push("first:start");
+    await wait(20);
+    events.push("first:end");
+    return "first result";
+  });
+  const second = lock.run(async () => {
+    events.push("second:start");
+    await wait(5);
+    events.push("second:end");
+    return "second result";
+  });
+  assert.deepEqual(await Promise.all([first, second]), [
+    "first result",
+    "second result"
+  ]);
+  assert.deepEqual(events, [
+    "first:start",
+    "first:end",
+    "second:start",
+    "second:end"
+  ]);
+  assert.equal(lock.state, "ready");
+});
+await runDemo("4. LockLimited aborts an operation after its timeout", async () => {
+  const lock = new LockLimited({
+    generateKey: createKeyGenerator("limited"),
+    opMs: 20,
+    unref: false
+  });
+  const reason = await lock.run((signal) => waitForAbort(signal));
+  assert.equal(reason.trigger, "soft");
+  assert.deepEqual(reason.log, ["op"]);
+  assert.equal(lock.state, "ready");
+});
+await runDemo("5. Charon serializes each id independently", async () => {
+  assert.equal(index_default, Charon, "default and named exports should match");
+  const closed = [];
+  const locks = new index_default({
+    generateKey: createKeyGenerator("charon"),
+    onClose: (_charon, event) => closed.push({
+      id: event.id,
+      hasNext: event.hasNext
+    })
+  });
+  const events = [];
+  const accountA1 = locks.run("account-a", async () => {
+    events.push("a1:start");
+    await wait(25);
+    events.push("a1:end");
+    return "a1";
+  });
+  const accountA2 = locks.run("account-a", async () => {
+    events.push("a2:start");
+    await wait(5);
+    events.push("a2:end");
+    return "a2";
+  });
+  const accountB = locks.run("account-b", async () => {
+    events.push("b:start");
+    await wait(5);
+    events.push("b:end");
+    return "b";
+  });
+  assert.deepEqual(await Promise.all([accountA1, accountA2, accountB]), [
+    "a1",
+    "a2",
+    "b"
+  ]);
+  assert.ok(
+    events.indexOf("a2:start") > events.indexOf("a1:end"),
+    "operations using the same id must be serialized"
+  );
+  assert.ok(
+    events.indexOf("b:end") < events.indexOf("a1:end"),
+    "operations using different ids should run independently"
+  );
+  assert.equal(locks.size, 0, "finished locks should be removed from Charon");
+  assert.ok(closed.some((event) => event.id === "account-a"));
+  assert.ok(closed.some((event) => event.id === "account-b"));
+});
+await runDemo("6. Explicit transaction serializes its operations", async () => {
+  const lock = new LockLimited({
+    generateKey: createKeyGenerator("explicit")
+  });
+  const { key, signal } = await lock.openTx();
+  const events = [];
+  const first = lock.runInTx(key, async (operationSignal) => {
+    assert.equal(operationSignal, signal);
+    events.push("first:start");
+    await wait(20);
+    events.push("first:end");
+    return 1;
+  });
+  const second = lock.runInTx(key, async () => {
+    events.push("second:start");
+    events.push("second:end");
+    return 2;
+  });
+  assert.deepEqual(await Promise.all([first, second]), [1, 2]);
+  assert.deepEqual(events, [
+    "first:start",
+    "first:end",
+    "second:start",
+    "second:end"
+  ]);
+  assert.equal(await lock.closeTx(key), true);
+  assert.equal(lock.state, "ready");
+});
+await runDemo("7. Idle transaction is aborted after idleMs", async () => {
+  const lock = new LockLimited({
+    generateKey: createKeyGenerator("idle"),
+    idleMs: 20,
+    unref: false
+  });
+  const { key, signal } = await lock.openTx();
+  const reason = await waitForAbort(signal);
+  assert.equal(reason.trigger, "soft");
+  assert.deepEqual(reason.log, ["idle"]);
+  assert.equal(await lock.closeTx(key), true);
+});
+await runDemo("8. totalMs remains a hard deadline after touches", async () => {
+  const lock = new LockLimited({
+    generateKey: createKeyGenerator("total"),
+    totalMs: 50,
+    idleMs: 25,
+    unref: false
+  });
+  const { key, signal } = await lock.openTx();
+  await wait(15);
+  assert.equal(lock.touchTx(key), true);
+  await wait(15);
+  assert.equal(lock.touchTx(key), true);
+  await wait(15);
+  assert.equal(lock.touchTx(key), true);
+  const reason = await waitForAbort(signal);
+  assert.equal(reason.trigger, "hard");
+  assert.deepEqual(reason.log, ["idle", "touch", "touch", "touch"]);
+  assert.equal(await lock.closeTx(key), true);
+});
+await runDemo("9. forceCloseMs releases an abandoned transaction", async () => {
+  const closed = [];
+  const lock = new LockLimited({
+    generateKey: createKeyGenerator("forced"),
+    idleMs: 15,
+    forceCloseMs: 15,
+    unref: false,
+    onClose: (_lock, hasNext) => closed.push(hasNext)
+  });
+  const { key, signal } = await lock.openTx();
+  await waitForAbort(signal);
+  await waitUntil(() => lock.state === "ready");
+  assert.equal(lock.checkTx(key), false);
+  assert.deepEqual(closed, [false]);
+});
+await runDemo("10. A rejected operation still releases the lock", async () => {
+  const lock = new LockLimited({
+    generateKey: createKeyGenerator("error")
+  });
+  await assert.rejects(
+    lock.run(async () => {
+      throw new Error("operation failed");
+    }),
+    /operation failed/
+  );
+  assert.equal(lock.state, "ready");
+  assert.equal(await lock.run(async () => "recovered"), "recovered");
+  assert.equal(lock.state, "ready");
+});
+console.log("\nCharon demo completed successfully.");
 //# sourceMappingURL=index.js.map
