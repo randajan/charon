@@ -1,6 +1,6 @@
 {
   "name": "@randajan/charon",
-  "version": "1.0.1",
+  "version": "2.0.0",
   "description": "Lightweight asynchronous locks and keyed transaction queues for JavaScript",
   "repository": {
     "type": "git",
