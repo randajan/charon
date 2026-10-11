@@ -24,10 +24,6 @@ export class Charon {
     entries() { return this.#locks.entries(); }
     [Symbol.iterator]() { return this.entries(); }
 
-    getOptThrowError(opt) {
-        return opt?.throwError != null ? !!opt.throwError : !!this.#cfg.lockCfg.throwError;
-    }
-
     #create(id) {
         const { lockCfg, retainMs, onOpen, onClose } = this.#cfg;
         let lock, ctid;
@@ -54,14 +50,14 @@ export class Charon {
         return lock;
     }
 
-    get(id, opt) {
+    get(id, throwError=false) {
         const lock = this.#locks.get(id);
         if (lock) { return lock; }
-        if (!this.getOptThrowError(opt)) { return; }
+        if (!throwError) { return; }
         throw new Error(`Lock '${id}' does not exist`);
     }
 
-    has(id, opt) { return !!this.get(id, opt); }
+    has(id, throwError=false) { return !!this.get(id, throwError); }
     ensure(id) { return this.#locks.get(id) ?? this.#create(id); }
 
 }

@@ -1,5 +1,5 @@
 // <define:__slib_info>
-var define_slib_info_default = { isBuild: true, name: "@randajan/charon", description: "Lightweight asynchronous locks and keyed transaction queues for JavaScript", version: "1.0.1", author: { name: "Jan Randa", email: "jnranda@gmail.com", url: "https://www.linkedin.com/in/randajan/" }, env: "development", mode: "node", port: 3e3, dir: { root: "/home/randajan/dev/lib/charon", dist: "demo/dist" } };
+var define_slib_info_default = { isBuild: true, name: "@randajan/charon", description: "Lightweight asynchronous locks and keyed transaction queues for JavaScript", version: "2.0.0", author: { name: "Jan Randa", email: "jnranda@gmail.com", url: "https://www.linkedin.com/in/randajan/" }, env: "development", mode: "node", port: 3e3, dir: { root: "/home/randajan/dev/lib/charon", dist: "demo/dist" } };
 
 // node_modules/chalk/source/vendor/ansi-styles/index.js
 var ANSI_BACKGROUND_OFFSET = 10;
@@ -932,9 +932,6 @@ var Charon = class {
   [Symbol.iterator]() {
     return this.entries();
   }
-  getOptThrowError(opt) {
-    return opt?.throwError != null ? !!opt.throwError : !!this.#cfg.lockCfg.throwError;
-  }
   #create(id) {
     const { lockCfg, retainMs, onOpen, onClose } = this.#cfg;
     let lock, ctid;
@@ -961,18 +958,18 @@ var Charon = class {
     this.#locks.set(id, lock = new Lock(cfg));
     return lock;
   }
-  get(id, opt) {
+  get(id, throwError = false) {
     const lock = this.#locks.get(id);
     if (lock) {
       return lock;
     }
-    if (!this.getOptThrowError(opt)) {
+    if (!throwError) {
       return;
     }
     throw new Error(`Lock '${id}' does not exist`);
   }
-  has(id, opt) {
-    return !!this.get(id, opt);
+  has(id, throwError = false) {
+    return !!this.get(id, throwError);
   }
   ensure(id) {
     return this.#locks.get(id) ?? this.#create(id);
