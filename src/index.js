@@ -1,17 +1,15 @@
-import { SerialQueue } from "./queue/SerialQueue";
-import { LockGate } from "./locks/LockGate";
-import { LockLimited } from "./locks/LockLimited";
-import { LockUnlimited } from "./locks/LockUnlimited";
-import { Charon } from "./collection/Charon";
+import { PromiseQueue } from "./base/queue/PromiseQueue";
+import { Lock } from "./base/collections/Lock";
+import { Charon } from "./base/collections/Charon";
+import { Observer } from "./base/observers/Observer";
+export * from "./base/errors";
 
 
 export default Charon;
 
-
 export {
-    SerialQueue,
-    LockGate,
-    LockLimited,
-    LockUnlimited,
+    PromiseQueue,
+    Lock,
+    Observer,
     Charon
 }

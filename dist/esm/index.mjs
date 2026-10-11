@@ -1,23 +1,276 @@
-// src/queue/SerialQueue.js
-var SerialQueue = class {
-  #tail = Promise.resolve();
-  #size = 0;
+import {
+  CharonError,
+  Observer,
+  PendingAbortError,
+  TxAbortError,
+  TxError,
+  TxTimeoutError
+} from "./chunk-27B7V7QV.mjs";
+
+// src/base/queue/PromiseQueue.js
+var PromiseQueue = class {
+  #queue = [];
+  #running = false;
+  #drain = [];
   get size() {
-    return this.#size;
+    return this.#queue.length + (this.#running ? 1 : 0);
   }
-  get idle() {
-    return this.#size === 0;
+  get state() {
+    return this.#running ? "busy" : "idle";
   }
-  add(callback) {
-    this.#size++;
-    const task = this.#tail.then(callback).finally(() => {
-      this.#size--;
+  isState(state) {
+    return this.state === state;
+  }
+  run(callback) {
+    return new Promise((resolve, reject) => {
+      this.#queue.push({ callback, resolve, reject });
+      this.#next();
     });
-    this.#tail = task.then(() => void 0, () => void 0);
-    return task;
+  }
+  abort(reason) {
+    reason ??= new PendingAbortError("operations");
+    const queue = this.#queue.splice(0);
+    for (const { reject } of queue) {
+      reject(reason);
+    }
+    this.#resolveDrain();
+    return queue.length;
   }
   drain() {
-    return this.#tail;
+    if (!this.size) {
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => this.#drain.push(resolve));
+  }
+  #next() {
+    if (this.#running) {
+      return;
+    }
+    const task = this.#queue.shift();
+    if (!task) {
+      return this.#resolveDrain();
+    }
+    this.#running = true;
+    Promise.resolve().then(task.callback).then(task.resolve, task.reject).finally(() => {
+      this.#running = false;
+      this.#next();
+    });
+  }
+  #resolveDrain() {
+    if (this.size) {
+      return;
+    }
+    for (const resolve of this.#drain.splice(0)) {
+      resolve();
+    }
+  }
+};
+
+// src/base/transactions/TxPublic.js
+var TxPublic = class {
+  #tx;
+  constructor(txContext) {
+    this.#tx = txContext;
+  }
+  get state() {
+    return this.#tx.state;
+  }
+  isState(state) {
+    return this.#tx.isState(state);
+  }
+  get lock() {
+    return this.#tx.lock;
+  }
+  get key() {
+    return this.#tx.key;
+  }
+  get size() {
+    return this.#tx.size;
+  }
+  get signal() {
+    return this.#tx.signal;
+  }
+  run(op, opt) {
+    return this.#tx.run(op, opt);
+  }
+  touch(opt) {
+    return this.#tx.touch(opt);
+  }
+  abort(reason, opt) {
+    return this.#tx.abort(reason, opt);
+  }
+  close(opt) {
+    return this.#tx.close(opt);
+  }
+  kill(opt) {
+    return this.#tx.kill(opt);
+  }
+};
+
+// src/base/transactions/TxPrivate.js
+var TxPrivate = class extends PromiseQueue {
+  #cfg;
+  #ac = new AbortController();
+  #state = "pending";
+  constructor(lock, key, observer, opt, onDestroy = (() => {
+  })) {
+    super();
+    opt ??= {};
+    const throwError = opt.throwError;
+    const txPublic = new TxPublic(this);
+    this.#cfg = { lock, key, throwError, public: txPublic, observer, onDestroy };
+    const ctx = this.#cfg.ctx = observer?.createTxCtx(txPublic, opt);
+    try {
+      observer?.onCreate(txPublic, ctx);
+    } catch {
+    }
+  }
+  get public() {
+    return this.#cfg.public;
+  }
+  get lock() {
+    return this.#cfg.lock;
+  }
+  get key() {
+    return this.#cfg.key;
+  }
+  get signal() {
+    return this.#ac.signal;
+  }
+  get state() {
+    return this.#state ?? super.state;
+  }
+  isState(state) {
+    return this.state === state;
+  }
+  formatThrowError(opt) {
+    return this.lock.formatThrowError(opt?.throwError ?? this.#cfg.throwError);
+  }
+  check(condition, message, opt) {
+    if (condition) {
+      return true;
+    }
+    if (!this.formatThrowError(opt)) {
+      return false;
+    }
+    throw new Error(`Transaction '${this.key}' ${message}`);
+  }
+  mustIdle(opt) {
+    return this.check(this.isState("idle"), "is not idling", opt);
+  }
+  mustAborted(opt) {
+    return this.check(this.signal.aborted, "was not aborted", opt);
+  }
+  mustClosing(opt) {
+    return this.check(this.isState("closing"), "is not closing", opt);
+  }
+  notAborted(opt) {
+    return this.check(!this.isState("aborted"), "was aborted", opt);
+  }
+  notClosing(opt) {
+    return this.check(!this.isState("closing"), "is closing", opt);
+  }
+  notDestroyed(opt) {
+    return this.check(!this.isState("destroyed"), "was destroyed", opt);
+  }
+  open() {
+    if (this.#state !== "pending") {
+      return this.public;
+    }
+    const { observer, public: txPublic, ctx } = this.#cfg;
+    this.#state = null;
+    try {
+      observer?.onOpen(txPublic, ctx);
+    } catch {
+    }
+    return txPublic;
+  }
+  touch(opt) {
+    if (!this.mustIdle(opt)) {
+      return false;
+    }
+    const { observer, public: txPublic, ctx } = this.#cfg;
+    try {
+      observer?.onTouch(txPublic, ctx, opt);
+    } catch {
+    }
+    return true;
+  }
+  async run(op, opt) {
+    const { observer, public: txPublic, ctx } = this.#cfg;
+    if (!this.notDestroyed(opt) || !this.notClosing(opt) || !this.notAborted(opt)) {
+      return false;
+    }
+    const opCtx = observer?.createOpCtx(txPublic, ctx, opt);
+    try {
+      observer?.onAddOp(txPublic, opCtx);
+    } catch {
+    }
+    try {
+      return await super.run((_) => {
+        try {
+          observer?.onStartOp(txPublic, opCtx);
+        } catch {
+        }
+        return op(txPublic);
+      });
+    } finally {
+      try {
+        observer?.onEndOp(txPublic, opCtx);
+      } catch {
+      }
+    }
+  }
+  abort(reason, opt) {
+    if (!this.notDestroyed(opt) || !this.notAborted(opt)) {
+      return false;
+    }
+    const { observer, public: txPublic, ctx } = this.#cfg;
+    reason = reason ?? new TxAbortError();
+    this.#ac.abort(reason);
+    super.abort(reason);
+    this.#state = "aborted";
+    try {
+      observer?.onAbort(txPublic, ctx, opt);
+    } catch {
+    }
+    return true;
+  }
+  async close(opt) {
+    if (!this.notDestroyed(opt) || !this.notClosing(opt)) {
+      return false;
+    }
+    const { observer, public: txPublic, ctx } = this.#cfg;
+    try {
+      observer?.onClosing(txPublic, ctx, opt);
+    } catch {
+    }
+    this.#state = "closing";
+    await super.drain();
+    this.destroy();
+    return true;
+  }
+  destroy() {
+    if (this.#state === "destroyed") {
+      return false;
+    }
+    const { observer, public: txPublic, ctx, onDestroy } = this.#cfg;
+    this.#state = "destroyed";
+    try {
+      onDestroy(this);
+    } catch {
+    }
+    try {
+      observer?.onDestroy(txPublic, ctx);
+    } catch {
+    }
+    return true;
+  }
+  kill(opt) {
+    if (!this.mustAborted(opt) || !this.mustClosing(opt)) {
+      return false;
+    }
+    return this.destroy();
   }
 };
 
@@ -41,410 +294,185 @@ var validFn = (fn, require2 = false, label = "") => {
   throw TypeError(`${label} must be type of function`);
 };
 
-// src/locks/LockGate.js
-var LockGate = class {
+// src/base/collections/Lock.js
+var Lock = class {
   #cfg;
-  #state = false;
-  #currentKey;
   #queue = [];
-  #generateKey;
-  #onClose;
+  #tx;
   constructor(cfg = {}) {
-    const { generateKey, onClose, ...passCfg } = validObj(cfg, true, "Lock cfg");
-    this.#generateKey = validFn(generateKey, true, "cfg.generateKey");
-    this.#onClose = validFn(onClose, false, "cfg.onClose");
-    passCfg.throwError = !!passCfg.throwError;
-    this.#cfg = Object.freeze(passCfg);
-  }
-  get cfg() {
-    return this.#cfg;
+    cfg = validObj(cfg, true, "Lock cfg");
+    const { generateKey, onOpen, onClose, observer, throwError } = cfg;
+    this.#cfg = {
+      throwError: !!throwError,
+      observer,
+      generateKey: validFn(generateKey, true, "Lock cfg.generateKey"),
+      onOpen: validFn(onOpen, false, "Lock cfg.onOpen") ?? (() => {
+      }),
+      onClose: validFn(onClose, false, "Lock cfg.onClose") ?? (() => {
+      }),
+      onDestroyTx: this.#detachTx.bind(this)
+    };
   }
   get size() {
     return this.#queue.length;
   }
   get state() {
-    return this.#state;
-  }
-  getOptThrowError(opt) {
-    return opt?.throwError != null ? !!opt.throwError : this.cfg.throwError;
-  }
-  #setKey(state) {
-    this.#state = state = !!state;
-    return this.#currentKey = state ? this.#generateKey() : void 0;
-  }
-  checkTx(key, opt) {
-    if (key === this.#currentKey) {
-      return true;
-    }
-    if (!this.getOptThrowError(opt)) {
-      return false;
-    }
-    throw new Error(`Lock '${key}' is unknown`);
-  }
-  async openTx(opt) {
-    if (!this.#state) {
-      return this.#setKey(true);
-    }
-    return new Promise((resolve) => {
-      this.#queue.push(resolve);
-    });
-  }
-  closeTx(key, opt) {
-    if (!this.checkTx(key, opt)) {
-      return false;
-    }
-    const next = this.#queue.shift();
-    const hasNext = !!next;
-    const newKey = this.#setKey(hasNext);
-    if (hasNext) {
-      next(newKey);
-    }
-    this.#onClose?.(this, hasNext);
-    return true;
-  }
-};
-
-// src/locks/LockUnlimited.js
-var LockUnlimited = class _LockUnlimited extends LockGate {
-  static optWithoutThrowError(opt) {
-    if (!opt) {
-      return;
-    }
-    const { throwError, ...passOpt } = opt;
-    return passOpt;
-  }
-  #ops = new SerialQueue();
-  #closing = false;
-  get state() {
-    if (!super.state) {
-      return "ready";
-    }
-    return this.#ops.idle ? "idle" : "busy";
+    return !this.#tx ? "ready" : this.#tx.state;
   }
   isState(state) {
     return this.state === state;
   }
+  formatThrowError(throwError = void 0) {
+    return throwError != null ? !!throwError : this.#cfg.throwError;
+  }
+  #createTx(opt) {
+    const { generateKey, onDestroyTx, observer } = this.#cfg;
+    const key = generateKey();
+    if (key == null) {
+      throw new TypeError(`Lock cfg.generateKey returned null or undefined`);
+    }
+    return new TxPrivate(this, key, observer, opt, onDestroyTx);
+  }
+  #attachTx(tx) {
+    return (this.#tx = tx).open();
+  }
+  #detachTx(tx, opt) {
+    if (this.#tx !== tx) {
+      return;
+    }
+    this.#tx = void 0;
+    const next = this.#queue.shift();
+    const hasNext = !!next;
+    if (hasNext) {
+      next.resolve(this.#attachTx(next.tx));
+    }
+    try {
+      this.#cfg.onClose(this, hasNext);
+    } catch {
+    }
+  }
+  getTx(key, throwError = void 0) {
+    if (key === this.#tx?.key) {
+      return this.#tx.public;
+    }
+    if (!this.formatThrowError(throwError)) {
+      return;
+    }
+    throw new Error(`Transaction '${key}' not found`);
+  }
   async openTx(opt) {
-    const key = await super.openTx(opt);
-    this.#closing = false;
-    return key;
+    try {
+      this.#cfg.onOpen(this);
+    } catch {
+    }
+    const tx = this.#createTx(opt);
+    if (!this.#tx) {
+      return this.#attachTx(tx);
+    }
+    return new Promise((resolve, reject) => this.#queue.push({ resolve, reject, tx }));
   }
-  async closeTx(key, opt) {
-    if (!this.checkTx(key, opt)) {
-      return false;
+  abortAll(reason, opt) {
+    reason ??= new PendingAbortError("transactions");
+    this.#tx?.abort(reason, opt);
+    const queue = this.#queue.splice(0);
+    for (const { reject, tx } of queue) {
+      tx.destroy();
+      reject(reason);
     }
-    this.#closing = true;
-    await this.#ops.drain();
-    return super.closeTx(key, opt);
-  }
-  async runInTx(key, op, opt) {
-    if (!this.checkTx(key, opt)) {
-      return false;
-    }
-    if (this.#closing) {
-      if (!this.getOptThrowError(opt)) {
-        return false;
-      }
-      throw new Error(`Lock '${key}' is closing`);
-    }
-    return this.#ops.add(op);
+    return queue.length;
   }
   async run(op, opt) {
-    const key = await this.openTx(opt);
+    const txPublic = await this.openTx({ ...opt || {}, singleOp: true });
     try {
-      return await this.runInTx(key, op, opt);
+      return await txPublic.run(op, opt);
     } finally {
-      await this.closeTx(key, _LockUnlimited.optWithoutThrowError(opt));
+      await txPublic.close(opt);
     }
   }
   async runTx(tx, opt) {
-    const key = await this.openTx(opt);
-    const run = (op, opt2) => this.runInTx(key, op, opt2);
+    const txPublic = await this.openTx(opt);
     try {
-      return await tx(run);
+      return await tx(txPublic);
     } finally {
-      await this.closeTx(key, _LockUnlimited.optWithoutThrowError(opt));
+      await txPublic.close(opt);
     }
   }
 };
 
-// src/contexts/TxContextBounced.js
-import { Bounce } from "@randajan/bounce";
-
-// src/contexts/TxContext.js
-import { setTimeoutUnref } from "@randajan/bounce";
-var TxContext = class extends AbortController {
-  #opt;
-  #fctid;
-  constructor(opt = {}) {
-    super();
-    this.#opt = Object.freeze(opt);
-  }
-  get opt() {
-    return this.#opt;
-  }
-  get key() {
-    return this.#opt.key;
-  }
-  touch() {
-    return false;
-  }
-  abort(log, trigger) {
-    if (!this.signal.aborted) {
-      super.abort({ log, trigger });
-    }
-    const { forceCloseMs, onForceClose, unref } = this.#opt;
-    if (forceCloseMs > 0 && this.#fctid == null) {
-      this.#fctid = setTimeoutUnref(onForceClose, forceCloseMs, unref);
-    }
-  }
-  clear() {
-    clearTimeout(this.#fctid);
-    this.#opt.onClear?.(this);
-  }
-};
-
-// src/contexts/TxContextBounced.js
-var TxContextBounced = class extends TxContext {
-  #bounce;
-  touch(type, ms) {
-    if (this.signal.aborted) {
-      return false;
-    }
-    if (!this.#bounce) {
-      const { totalMs, unref } = this.opt;
-      this.#bounce = new Bounce(this.abort.bind(this), {
-        hardMs: totalMs,
-        unref
-      });
-    }
-    this.#bounce.attach(type, ms);
-    return true;
-  }
-  clear() {
-    super.clear();
-    this.#bounce.flush();
-  }
-};
-
-// src/contexts/TxContextSimple.js
-import { setTimeoutUnref as setTimeoutUnref2 } from "@randajan/bounce";
-var TxContextSimple = class extends TxContext {
-  #tid;
-  #log = [];
-  touch(type) {
-    const { totalMs, opMs, unref } = this.opt;
-    const abortIsHard = totalMs > 0 && (!(opMs > 0) || totalMs <= opMs);
-    const abortTrigger = abortIsHard ? "hard" : "soft";
-    const ms = abortIsHard ? totalMs : opMs;
-    if (ms > 0 && type === "op") {
-      clearTimeout(this.#tid);
-      this.#tid = setTimeoutUnref2((_) => this.abort(this.#log, abortTrigger), ms, unref);
-    }
-    this.#log.push(type);
-    return true;
-  }
-  clear() {
-    super.clear();
-    clearTimeout(this.#tid);
-  }
-};
-
-// src/locks/LockLimited.js
-import { validateTimeout } from "@randajan/bounce";
-var LockLimited = class extends LockUnlimited {
-  #clearTx;
-  #tx;
-  constructor(cfg = {}) {
-    super({
-      ...cfg,
-      totalMs: validateTimeout(cfg.totalMs, "Lock cfg.totalMs"),
-      opMs: validateTimeout(cfg.opMs, "Lock cfg.opMs"),
-      idleMs: validateTimeout(cfg.idleMs, "Lock cfg.idleMs"),
-      forceCloseMs: validateTimeout(cfg.forceCloseMs, "Lock cfg.forceCloseMs"),
-      unref: !!cfg.unref
-    });
-    this.#clearTx = (tx) => {
-      if (this.#tx === tx) {
-        this.#tx = void 0;
-      }
-    };
-  }
-  getOptMs(msName, opt, txOptFallback = false) {
-    const ms = validateTimeout(opt?.[msName], `Lock opt.${msName}`);
-    if (ms != null) {
-      return ms;
-    }
-    const txMs = txOptFallback ? this.#tx?.opt[msName] : void 0;
-    return txMs ?? this.cfg[msName];
-  }
-  checkTx(key, opt = {}) {
-    if (!super.checkTx(key, opt)) {
-      return false;
-    }
-    if (this.#tx?.key === key) {
-      return true;
-    }
-    if (!this.getOptThrowError(opt)) {
-      return false;
-    }
-    throw new Error(`Lock '${key}' unstable state reached.`);
-  }
-  #touchTx(key, type, ms, opt = {}) {
-    if (!this.checkTx(key, opt)) {
-      return false;
-    }
-    if (this.#tx.touch(type, ms)) {
-      return true;
-    }
-    if (!this.getOptThrowError(opt)) {
-      return false;
-    }
-    throw new Error(`Lock '${key}' expired`);
-  }
-  async #openTx(TxContextClass, opt = {}) {
-    const { unref } = this.cfg;
-    const totalMs = this.getOptMs("totalMs", opt);
-    const opMs = this.getOptMs("opMs", opt);
-    const idleMs = this.getOptMs("idleMs", opt);
-    const forceCloseMs = this.getOptMs("forceCloseMs", opt);
-    const key = await super.openTx(opt);
-    const noThrowOpt = LockUnlimited.optWithoutThrowError(opt);
-    const tx = this.#tx = new TxContextClass({
-      key,
-      totalMs,
-      idleMs,
-      opMs,
-      forceCloseMs,
-      unref,
-      onForceClose: (_) => this.closeTx(key, noThrowOpt),
-      onClear: this.#clearTx
-    });
-    return tx;
-  }
-  async openTx(opt) {
-    const tx = await this.#openTx(TxContextBounced, opt);
-    const { key, signal, opt: { idleMs } } = tx;
-    tx.touch("idle", idleMs);
-    return { key, signal };
-  }
-  async closeTx(key, opt) {
-    const tx = this.#tx;
-    const closed = await super.closeTx(key, opt);
-    if (closed) {
-      tx?.clear();
-    }
-    return closed;
-  }
-  touchTx(key, opt) {
-    if (!this.isState("idle")) {
-      if (!this.getOptThrowError(opt)) {
-        return false;
-      }
-      throw new Error(`Lock '${key}' is not idle`);
-    }
-    const idleMs = this.getOptMs("idleMs", opt, true);
-    return this.#touchTx(key, "touch", idleMs, opt);
-  }
-  async run(op, opt) {
-    const tx = await this.#openTx(TxContextSimple, opt);
-    const { key, signal } = tx;
-    try {
-      return await super.runInTx(key, () => {
-        tx.touch("op");
-        return op(signal);
-      }, opt);
-    } finally {
-      await this.closeTx(key, LockUnlimited.optWithoutThrowError(opt));
-    }
-  }
-  async runInTx(key, op, opt) {
-    const opMs = this.getOptMs("opMs", opt, true);
-    const idleMs = this.getOptMs("idleMs", opt, true);
-    return super.runInTx(key, async () => {
-      if (!this.#touchTx(key, "op", opMs, opt)) {
-        return false;
-      }
-      try {
-        return await op(this.#tx.signal);
-      } finally {
-        this.#touchTx(key, "idle", idleMs, LockUnlimited.optWithoutThrowError(opt));
-      }
-    }, opt);
-  }
-  async runTx(tx, opt) {
-    const { key, signal } = await this.openTx(opt);
-    const run = (op, opt2) => this.runInTx(key, op, opt2);
-    try {
-      return await tx(run, signal);
-    } finally {
-      await this.closeTx(key, LockUnlimited.optWithoutThrowError(opt));
-    }
-  }
-};
-
-// src/collection/Charon.js
+// src/base/collections/Charon.js
+import { setTimeoutUnref, validateTimeout } from "@randajan/bounce";
 var Charon = class {
   #locks = /* @__PURE__ */ new Map();
-  #cfg;
+  #cfg = {};
   constructor(cfg = {}) {
-    this.#cfg = validObj(cfg, false, "Charon cfg");
+    const cfgAll = validObj(cfg, false, "Charon cfg");
+    const { onOpen, onClose, retainMs, ...lockCfg } = cfgAll;
+    this.#cfg.lockCfg = lockCfg;
+    this.#cfg.retainMs = validateTimeout(retainMs, "Charon cfg.retainMs") ?? 6e4;
+    this.#cfg.onOpen = validFn(onOpen, false, "Charon cfg.onOpen") ?? (() => {
+    });
+    this.#cfg.onClose = validFn(onClose, false, "Charon cfg.onClose") ?? (() => {
+    });
   }
   get size() {
     return this.#locks.size;
   }
+  keys() {
+    return this.#locks.keys();
+  }
+  values() {
+    return this.#locks.values();
+  }
+  entries() {
+    return this.#locks.entries();
+  }
+  [Symbol.iterator]() {
+    return this.entries();
+  }
+  getOptThrowError(opt) {
+    return opt?.throwError != null ? !!opt.throwError : !!this.#cfg.lockCfg.throwError;
+  }
   #create(id) {
-    let lock;
-    const onClose = (lock2, hasNext) => {
-      if (!hasNext && this.#locks.get(id) === lock2) {
-        this.#locks.delete(id);
+    const { lockCfg, retainMs, onOpen, onClose } = this.#cfg;
+    let lock, ctid;
+    const cleanUp = () => {
+      if (lock?.state !== "ready") {
+        return;
       }
-      this.#cfg.onClose?.(this, { lock: lock2, id, hasNext });
+      if (lock !== this.#locks.get(id)) {
+        return;
+      }
+      this.#locks.delete(id);
     };
-    lock = new LockLimited({ ...this.#cfg, onClose });
-    this.#locks.set(id, lock);
+    const cfg = { ...lockCfg };
+    cfg.onOpen = (lock2) => {
+      clearTimeout(ctid);
+      onOpen(this, { lock: lock2, id });
+    };
+    cfg.onClose = (lock2, hasNext) => {
+      if (!hasNext) {
+        ctid = setTimeoutUnref(cleanUp, retainMs, cfg.unref);
+      }
+      onClose(this, { lock: lock2, id, hasNext });
+    };
+    this.#locks.set(id, lock = new Lock(cfg));
     return lock;
   }
-  #getOrAdd(id) {
-    return this.#locks.get(id) ?? this.#create(id);
-  }
-  get(id, opt = {}) {
+  get(id, opt) {
     const lock = this.#locks.get(id);
     if (lock) {
       return lock;
     }
-    if (!opt?.throwError) {
+    if (!this.getOptThrowError(opt)) {
       return;
     }
     throw new Error(`Lock '${id}' does not exist`);
   }
-  has(id, opt = {}) {
+  has(id, opt) {
     return !!this.get(id, opt);
   }
-  async run(id, callback, opt) {
-    return this.#getOrAdd(id).run(callback, opt);
-  }
-  openTx(id, opt) {
-    return this.#getOrAdd(id).openTx(opt);
-  }
-  checkTx(id, key, opt = {}) {
-    const lock = this.get(id, opt);
-    return lock ? lock.checkTx(key, opt) : false;
-  }
-  touchTx(id, key, opt = {}) {
-    const lock = this.get(id, opt);
-    return lock ? lock.touchTx(key, opt) : false;
-  }
-  async runInTx(id, key, callback, opt = {}) {
-    const lock = this.get(id, opt);
-    return lock ? lock.runInTx(key, callback, opt) : false;
-  }
-  closeTx(id, key, opt = {}) {
-    const lock = this.get(id, opt);
-    return lock ? lock.closeTx(key, opt) : false;
-  }
-  async runTx(id, tx, opt = {}) {
-    return this.#getOrAdd(id).runTx(tx, opt);
+  ensure(id) {
+    return this.#locks.get(id) ?? this.#create(id);
   }
 };
 
@@ -452,10 +480,14 @@ var Charon = class {
 var index_default = Charon;
 export {
   Charon,
-  LockGate,
-  LockLimited,
-  LockUnlimited,
-  SerialQueue,
+  CharonError,
+  Lock,
+  Observer,
+  PendingAbortError,
+  PromiseQueue,
+  TxAbortError,
+  TxError,
+  TxTimeoutError,
   index_default as default
 };
 //# sourceMappingURL=index.mjs.map

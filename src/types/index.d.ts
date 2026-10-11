@@ -1,286 +1,201 @@
-/** A value that may be returned synchronously or asynchronously. */
 export type MaybePromise<T> = T | PromiseLike<T>;
 
-/** Common behavior for operations that reference an existing transaction. */
-export interface LockOptions {
-    /** Throw when the transaction is unknown or in an invalid state. */
+export interface ControlOptions {
     throwError?: boolean;
 }
 
-/** Timeout values that may be configured for an individual transaction. */
-export interface LockTransactionOptions extends LockOptions {
-    /** Maximum lifetime of the complete transaction in milliseconds. */
-    totalMs?: number;
-
-    /** Maximum duration of one operation in milliseconds. */
-    opMs?: number;
-
-    /** Maximum idle time between operations in milliseconds. */
-    idleMs?: number;
-
-    /** Delay between aborting and forcibly closing a transaction. */
-    forceCloseMs?: number;
+export interface TransactionOptions extends ControlOptions {
+    singleOp?: boolean;
 }
 
-export type LockTimeoutName = "totalMs" | "opMs" | "idleMs" | "forceCloseMs";
-export type LockState = "ready" | "idle" | "busy";
-export type LockAbortTrigger = "soft" | "hard";
-export type LockActivity = "idle" | "touch" | "op";
+export type PromiseQueueState = "idle" | "busy";
+export type TransactionState = PromiseQueueState | "pending" | "aborted" | "closing" | "destroyed";
+export type LockState = "ready" | TransactionState;
 
-/** Value stored in `signal.reason` when a limited transaction expires. */
-export interface LockAbortReason {
-    log: LockActivity[];
-    trigger: LockAbortTrigger;
+
+export class CharonError<TCode extends string = string> extends Error {
+    constructor(code: TCode, message: string);
+    readonly code: TCode;
 }
 
-/** Abort signal passed to operations managed by a limited lock. */
-export interface LockAbortSignal extends AbortSignal {
-    readonly reason: LockAbortReason | undefined;
+export class TxError<
+    TCode extends string = string,
+    TLog = unknown
+> extends CharonError<TCode> {
+    constructor(code: TCode, message: string, log?: Iterable<TLog>);
+    log: readonly TLog[];
 }
 
-/** Handle returned when a limited transaction is opened explicitly. */
-export interface LockTransaction<TKey> {
-    key: TKey;
-    signal: LockAbortSignal;
+export class TxTimeoutError<
+    TLimit extends string = "total" | "op" | "idle",
+    TLog = unknown
+> extends TxError<TLimit, TLog> {
+    constructor(limit: TLimit, ms: number | undefined, log?: Iterable<TLog>);
+    readonly ms: number | undefined;
 }
 
-export interface LockGateConfig<
-    TKey = unknown,
-    TLock = LockGate<TKey>
-> extends LockOptions {
-    /** Creates the unique key used to identify a new transaction. */
-    generateKey: () => TKey;
-
-    /** Called synchronously whenever a transaction releases the gate. */
-    onClose?: (lock: TLock, hasNext: boolean) => unknown;
+export class TxAbortError<TLog = unknown> extends TxError<"manual", TLog> {
+    constructor(log?: Iterable<TLog>);
 }
 
-export type LockUnlimitedConfig<TKey = unknown> = LockGateConfig<
-    TKey,
-    LockUnlimited<TKey>
->;
-
-export type LockLimitedConfig<TKey = unknown> = Omit<
-    LockUnlimitedConfig<TKey>,
-    "onClose"
-> & LockTransactionOptions & {
-    /** Do not keep the process alive solely because of active timers. */
-    unref?: boolean;
-
-    /** Called synchronously whenever a transaction releases the lock. */
-    onClose?: (lock: LockLimited<TKey>, hasNext: boolean) => unknown;
-};
-
-export interface ResolvedLockConfig {
-    readonly throwError: boolean;
+export class PendingAbortError<TCode extends string = string> extends CharonError<TCode> {
+    constructor(code: TCode);
 }
 
-export interface ResolvedLockLimitedConfig extends ResolvedLockConfig {
-    readonly totalMs: number | undefined;
-    readonly opMs: number | undefined;
-    readonly idleMs: number | undefined;
-    readonly forceCloseMs: number | undefined;
-    readonly unref: boolean;
-}
 
-/** A small FIFO queue that executes asynchronous callbacks one at a time. */
-export class SerialQueue {
-    /** Number of queued or currently running callbacks. */
+export class PromiseQueue {
     readonly size: number;
+    readonly state: PromiseQueueState;
 
-    /** Whether no callback is queued or running. */
-    readonly idle: boolean;
+    isState(state: PromiseQueueState): boolean;
 
-    /** Add a callback and return its individual result. */
-    add<TResult>(callback: () => MaybePromise<TResult>): Promise<TResult>;
-
-    /** Wait until every callback currently in the queue has settled. */
+    run<TResult>(callback: () => MaybePromise<TResult>): Promise<TResult>;
+    abort(reason?: Error): number;
     drain(): Promise<void>;
 }
 
-/**
- * Owns one transaction at a time and hands ownership to waiting callers in
- * FIFO order.
- */
-export class LockGate<
+
+export interface Tx<
     TKey = unknown,
-    TState = boolean,
-    TOpenResult = TKey,
-    TCloseResult = boolean
+    TOptions extends TransactionOptions = TransactionOptions
 > {
-    constructor(config: LockGateConfig<TKey, LockGate<TKey, TState, TOpenResult, TCloseResult>>);
-
-    readonly cfg: Readonly<ResolvedLockConfig>;
-
-    /** Number of transactions waiting to acquire the gate. */
+    readonly state: TransactionState;
+    readonly lock: Lock<TKey, TOptions>;
+    readonly key: TKey;
     readonly size: number;
+    readonly signal: AbortSignal;
 
-    /** Current state of the gate. */
-    readonly state: TState;
+    isState(state: TransactionState): boolean;
 
-    getOptThrowError(options?: LockOptions): boolean;
-
-    /** Check whether a key owns the current transaction. */
-    checkTx(key: TKey, options?: LockOptions): boolean;
-
-    /** Wait for ownership of the gate and return the new transaction handle. */
-    openTx(options?: LockOptions): Promise<TOpenResult>;
-
-    /** Release the current transaction. */
-    closeTx(key: TKey, options?: LockOptions): TCloseResult;
-}
-
-/** Queues one operation inside an explicitly owned transaction. */
-export interface LockRunner<
-    TArguments extends unknown[] = [],
-    TOptions extends LockOptions = LockOptions
-> {
-    <TResult>(
-        operation: (...args: TArguments) => MaybePromise<TResult>,
+    run<TResult>(
+        operation: (tx: Tx<TKey, TOptions>) => MaybePromise<TResult>,
         options?: TOptions
     ): Promise<TResult | false>;
+
+    touch(options?: TOptions): boolean;
+    abort(reason?: Error, options?: TOptions): boolean;
+    close(options?: TOptions): Promise<boolean>;
+    kill(options?: TOptions): boolean;
 }
 
-/** Callback used by `LockUnlimited.runTx`. */
-export type LockUnlimitedRunner = LockRunner<[], LockOptions>;
 
-/** Serializes operations without applying time limits. */
-export class LockUnlimited<
+export class Observer<
+    TOptions extends TransactionOptions = TransactionOptions,
+    TTxContext = TOptions,
+    TOperationContext = { ctx: TTxContext; opt: TOptions }
+> {
+    constructor(options?: Partial<TOptions>);
+
+    readonly opt: Readonly<Partial<TOptions>>;
+
+    createTxCtx<TKey>(tx: Tx<TKey, TOptions>, options: TOptions): TTxContext;
+    createOpCtx<TKey>(
+        tx: Tx<TKey, TOptions>,
+        context: TTxContext,
+        options: TOptions
+    ): TOperationContext;
+
+    onCreate<TKey>(tx: Tx<TKey, TOptions>, context: TTxContext): unknown;
+    onOpen<TKey>(tx: Tx<TKey, TOptions>, context: TTxContext): unknown;
+    onTouch<TKey>(tx: Tx<TKey, TOptions>, context: TTxContext, options?: TOptions): unknown;
+
+    onAddOp<TKey>(tx: Tx<TKey, TOptions>, context: TOperationContext): unknown;
+    onStartOp<TKey>(tx: Tx<TKey, TOptions>, context: TOperationContext): unknown;
+    onEndOp<TKey>(tx: Tx<TKey, TOptions>, context: TOperationContext): unknown;
+
+    onAbort<TKey>(tx: Tx<TKey, TOptions>, context: TTxContext, options?: TOptions): unknown;
+    onClosing<TKey>(tx: Tx<TKey, TOptions>, context: TTxContext, options?: TOptions): unknown;
+    onDestroy<TKey>(tx: Tx<TKey, TOptions>, context: TTxContext): unknown;
+}
+
+
+export interface LockConfig<
     TKey = unknown,
-    TOpenResult = TKey,
-    TOperationArguments extends unknown[] = [],
-    TTransactionArguments extends unknown[] = [],
-    TOptions extends LockOptions = LockOptions
->
-    extends LockGate<TKey, LockState, TOpenResult, Promise<boolean>> {
-    constructor(config: LockUnlimitedConfig<TKey>);
+    TOptions extends TransactionOptions = TransactionOptions
+> extends ControlOptions {
+    generateKey: () => TKey;
+    observer?: Observer<TOptions, any, any>;
+    onOpen?: (lock: Lock<TKey, TOptions>) => unknown;
+    onClose?: (lock: Lock<TKey, TOptions>, hasNext: boolean) => unknown;
+}
 
-    static optWithoutThrowError<TOptions extends LockOptions>(
-        options?: TOptions
-    ): Omit<TOptions, "throwError"> | undefined;
+export class Lock<
+    TKey = unknown,
+    TOptions extends TransactionOptions = TransactionOptions
+> {
+    constructor(config: LockConfig<TKey, TOptions>);
+
+    readonly size: number;
+    readonly state: LockState;
 
     isState(state: LockState): boolean;
+    formatThrowError(throwError?: boolean): boolean;
 
-    /** Queue an operation inside the currently owned transaction. */
-    runInTx<TResult>(
-        key: TKey,
-        operation: (...args: TOperationArguments) => MaybePromise<TResult>,
+    getTx(key: TKey, throwError: true): Tx<TKey, TOptions>;
+    getTx(key: TKey, throwError?: boolean): Tx<TKey, TOptions> | undefined;
+
+    openTx(options?: TOptions): Promise<Tx<TKey, TOptions>>;
+    abortAll(reason?: Error, options?: TOptions): number;
+
+    run<TResult>(
+        operation: (tx: Tx<TKey, TOptions>) => MaybePromise<TResult>,
         options?: TOptions
     ): Promise<TResult | false>;
 
-    /** Acquire the lock, run one operation, and release it. */
-    run<TResult>(
-        operation: (...args: TOperationArguments) => MaybePromise<TResult>,
-        options?: TOptions
-    ): Promise<TResult>;
-
-    /** Acquire the lock for a callback that may enqueue several operations. */
     runTx<TResult>(
-        transaction: (
-            run: LockRunner<TOperationArguments, TOptions>,
-            ...args: TTransactionArguments
-        ) => MaybePromise<TResult>,
+        transaction: (tx: Tx<TKey, TOptions>) => MaybePromise<TResult>,
         options?: TOptions
     ): Promise<TResult>;
 }
 
-/** Callback used by `LockLimited.runTx`. */
-export type LockLimitedRunner = LockRunner<
-    [signal: LockAbortSignal],
-    LockTransactionOptions
->;
 
-/** Serializes operations and aborts transactions that exceed their limits. */
-export class LockLimited<TKey = unknown>
-    extends LockUnlimited<
-        TKey,
-        LockTransaction<TKey>,
-        [signal: LockAbortSignal],
-        [signal: LockAbortSignal],
-        LockTransactionOptions
-    > {
-    constructor(config: LockLimitedConfig<TKey>);
-
-    readonly cfg: Readonly<ResolvedLockLimitedConfig>;
-
-    getOptMs(
-        name: LockTimeoutName,
-        options?: LockTransactionOptions,
-        transactionFallback?: boolean
-    ): number | undefined;
-
-    /** Wait for ownership and start a transaction with timeout handling. */
-    openTx(options?: LockTransactionOptions): Promise<LockTransaction<TKey>>;
-
-    /** Restart the idle timeout of the current idle transaction. */
-    touchTx(key: TKey, options?: LockTransactionOptions): boolean;
+export interface CharonEvent<
+    TId = unknown,
+    TKey = unknown,
+    TOptions extends TransactionOptions = TransactionOptions
+> {
+    readonly id: TId;
+    readonly lock: Lock<TKey, TOptions>;
 }
 
-export interface CharonCloseEvent<TId, TKey> {
-    lock: LockLimited<TKey>;
-    id: TId;
-    hasNext: boolean;
+export interface CharonCloseEvent<
+    TId = unknown,
+    TKey = unknown,
+    TOptions extends TransactionOptions = TransactionOptions
+> extends CharonEvent<TId, TKey, TOptions> {
+    readonly hasNext: boolean;
 }
 
-export type CharonConfig<TId = unknown, TKey = unknown> = Omit<
-    LockLimitedConfig<TKey>,
-    "onClose"
-> & {
-    /** Called whenever one of the managed transactions releases its lock. */
-    onClose?: (
-        charon: Charon<TId, TKey>,
-        event: CharonCloseEvent<TId, TKey>
-    ) => unknown;
-};
+export type CharonConfig<
+    TId = unknown,
+    TKey = unknown,
+    TOptions extends TransactionOptions = TransactionOptions
+> = Omit<LockConfig<TKey, TOptions>, "onOpen" | "onClose"> & {
+    retainMs?: number;
+    unref?: boolean;
+    onOpen?: (charon: Charon<TId, TKey, TOptions>, event: CharonEvent<TId, TKey, TOptions>) => unknown;
+    onClose?: (charon: Charon<TId, TKey, TOptions>, event: CharonCloseEvent<TId, TKey, TOptions>) => unknown;
+}
 
-/** Maintains an independent limited lock for every id. */
-export class Charon<TId = unknown, TKey = unknown> {
-    constructor(config: CharonConfig<TId, TKey>);
+export class Charon<
+    TId = unknown,
+    TKey = unknown,
+    TOptions extends TransactionOptions = TransactionOptions
+> implements Iterable<[TId, Lock<TKey, TOptions>]> {
+    constructor(config: CharonConfig<TId, TKey, TOptions>);
 
-    /** Number of ids with an active or waiting transaction. */
     readonly size: number;
 
-    get(id: TId, options: LockOptions & { throwError: true }): LockLimited<TKey>;
-    get(id: TId, options?: LockOptions): LockLimited<TKey> | undefined;
+    keys(): IterableIterator<TId>;
+    values(): IterableIterator<Lock<TKey, TOptions>>;
+    entries(): IterableIterator<[TId, Lock<TKey, TOptions>]>;
+    [Symbol.iterator](): IterableIterator<[TId, Lock<TKey, TOptions>]>;
 
-    has(id: TId, options?: LockOptions): boolean;
-
-    run<TResult>(
-        id: TId,
-        operation: (signal: LockAbortSignal) => MaybePromise<TResult>,
-        options?: LockTransactionOptions
-    ): Promise<TResult>;
-
-    openTx(
-        id: TId,
-        options?: LockTransactionOptions
-    ): Promise<LockTransaction<TKey>>;
-
-    checkTx(id: TId, key: TKey, options?: LockOptions): boolean;
-
-    touchTx(id: TId, key: TKey, options?: LockTransactionOptions): boolean;
-
-    runInTx<TResult>(
-        id: TId,
-        key: TKey,
-        operation: (signal: LockAbortSignal) => MaybePromise<TResult>,
-        options?: LockTransactionOptions
-    ): Promise<TResult | false>;
-
-    closeTx(
-        id: TId,
-        key: TKey,
-        options?: LockOptions
-    ): Promise<boolean> | false;
-
-    runTx<TResult>(
-        id: TId,
-        transaction: (
-            run: LockLimitedRunner,
-            signal: LockAbortSignal
-        ) => MaybePromise<TResult>,
-        options?: LockTransactionOptions
-    ): Promise<TResult>;
+    get(id: TId, options: ControlOptions & { throwError: true }): Lock<TKey, TOptions>;
+    get(id: TId, options?: ControlOptions): Lock<TKey, TOptions> | undefined;
+    has(id: TId, options?: ControlOptions): boolean;
+    ensure(id: TId): Lock<TKey, TOptions>;
 }
+
 
 export default Charon;

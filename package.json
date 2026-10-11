@@ -16,6 +16,11 @@
       "import": "./dist/esm/index.mjs",
       "require": "./dist/cjs/index.cjs"
     },
+    "./obs/timed": {
+      "types": "./dist/types/obs/timed/index.d.ts",
+      "import": "./dist/esm/obs/timed/index.mjs",
+      "require": "./dist/cjs/obs/timed/index.cjs"
+    },
     "./package.json": "./package.json"
   },
   "scripts": {
@@ -58,6 +63,6 @@
     "url": "https://www.linkedin.com/in/randajan/"
   },
   "dependencies": {
-    "@randajan/bounce": "^1.0.1"
+    "@randajan/bounce": "^1.1.0"
   }
 }

@@ -132,10 +132,10 @@
   resolved "https://registry.yarnpkg.com/@esbuild/win32-x64/-/win32-x64-0.28.2.tgz#b21affb804cc167c133d95f45b3a1dc1323b9a87"
   integrity sha512-5ebpxr3nWMzrL/rnUI755Jkuee0bHL/Gq0WTF9lvcpv73wAp5eu8MfBUgWK9bhWvZjj7yX8etf/8tI8Ney695g==
 
-"@randajan/bounce@^1.0.1":
-  version "1.0.1"
-  resolved "https://registry.yarnpkg.com/@randajan/bounce/-/bounce-1.0.1.tgz#d5a444f6461088b3bb6c9bb3b3ff2e916cef0af9"
-  integrity sha512-WcTngNVv/dbR2Kl+j+PFv80fqPJ8japrNRNaZc3+iUFw9tCY9g6F7MifdhAObfYAMUFPggL6Pje/tSHdVKQdDg==
+"@randajan/bounce@^1.1.0":
+  version "1.1.0"
+  resolved "https://registry.yarnpkg.com/@randajan/bounce/-/bounce-1.1.0.tgz#de9324aab5ead8e157a9f464b0dc51671cda764b"
+  integrity sha512-xC86K7ud8yChp7OjDXC0V4ibt2fMLuZr4RMuai8M1Td5aP57/GP8J7JNJQkYovRBj01hV7AXidiGU+3yo8vg0g==
 
 "@randajan/simple-lib@^5.0.1":
   version "5.0.1"

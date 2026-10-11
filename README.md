@@ -2,697 +2,646 @@
 
 [![NPM](https://img.shields.io/npm/v/@randajan/charon.svg)](https://www.npmjs.com/package/@randajan/charon) [![JavaScript Style Guide](https://img.shields.io/badge/code_style-standard-brightgreen.svg)](https://standardjs.com)
 
-Lightweight asynchronous locks and keyed transaction queues for JavaScript.
+Small asynchronous locks, transaction queues, and optional timeout handling for JavaScript.
 
-Charon serializes asynchronous work that must not overlap. It can protect one
-resource with a lock, or maintain an independent lock for every resource ID.
-Operations for the same ID run in order, while operations for different IDs
-remain concurrent.
+Charon serializes work that must not overlap. Work submitted to the same lock runs in order, while unrelated locks remain concurrent. A transaction may contain one operation or retain ownership across several operations.
 
-The package includes several layers that can also be used independently:
+Timeout behavior is not hard-wired into the lock. It is provided by a separate observer, so the core remains small and custom lifecycle policies can be added without replacing the locking model.
 
-- `SerialQueue` executes asynchronous callbacks in FIFO order.
-- `LockGate` grants exclusive ownership to one transaction at a time.
-- `LockUnlimited` adds serialized operations and transaction helpers.
-- `LockLimited` adds abort signals and transaction time limits.
-- `Charon` creates and removes `LockLimited` instances by resource ID.
+## Features
 
-## Installation
+- FIFO transaction ownership and FIFO operations.
+- Independent locks grouped by any resource ID.
+- Cooperative cancellation through `AbortSignal`.
+- Manual abort, close, and last-resort lock release.
+- Optional total, operation, and idle time limits.
+- Grace periods between abort, close, and forced release.
+- Extensible transaction lifecycle through observers.
+- ESM, CommonJS, and TypeScript declarations.
+
+## Installation and exports
 
 ```sh
 npm install @randajan/charon
 ```
 
-The package provides ESM, CommonJS, and TypeScript declarations.
+The package has two public entry points:
 
 ```js
 import Charon, {
-    LockGate,
-    LockLimited,
-    LockUnlimited,
-    SerialQueue
+    Lock,
+    Observer,
+    PromiseQueue
 } from "@randajan/charon";
+
+import TimeoutObserver, {
+    MultiTimeoutContext,
+    SingleTimeoutContext,
+    TimeoutContext
+} from "@randajan/charon/obs/timed";
 ```
 
-`Charon` is both the default export and a named export.
+`Charon` and `TimeoutObserver` are available as both default and named exports from their respective entry points.
 
 ## Quick start
 
+Use `Charon` when work belongs to identifiable resources such as accounts, documents, tenants, or cache keys:
+
 ```js
 import Charon from "@randajan/charon";
-import { randomUUID } from "node:crypto";
+import TimeoutObserver from "@randajan/charon/obs/timed";
+
+let nextTransactionId = 0;
 
 const accounts = new Charon({
-    generateKey: randomUUID,
-    opMs: 5_000,
-    idleMs: 1_000,
-    totalMs: 15_000,
-    forceCloseMs: 500
+    generateKey: () => ++nextTransactionId,
+    observer: new TimeoutObserver({
+        opMs: 5_000,
+        idleMs: 1_000,
+        totalMs: 15_000,
+        forceCloseMs: 500,
+        forceKillMs: 500
+    })
 });
 
-const updateA = accounts.run("account-a", async signal => {
-    const account = await loadAccount("account-a", { signal });
-    account.balance += 10;
-    await saveAccount(account, { signal });
-    return account.balance;
-});
+const updateAccount = (accountId, amount) => {
+    const lock = accounts.ensure(accountId);
 
-const updateAAgain = accounts.run("account-a", async signal => {
-    // Starts only after updateA has settled and released account-a.
-    return recalculateAccount("account-a", { signal });
-});
+    return lock.run(async tx => {
+        const account = await loadAccount(accountId, {
+            signal: tx.signal
+        });
 
-const updateB = accounts.run("account-b", async signal => {
-    // Runs independently and may overlap both account-a requests.
-    return recalculateAccount("account-b", { signal });
-});
+        account.balance += amount;
+        await saveAccount(account, { signal: tx.signal });
+        return account.balance;
+    });
+};
+```
 
-const [balance, recalculatedA, recalculatedB] = await Promise.all([
-    updateA,
-    updateAAgain,
-    updateB
+Calls for the same `accountId` are serialized. Calls for different IDs may run at the same time.
+
+```js
+await Promise.all([
+    updateAccount("account-a", 10),
+    updateAccount("account-a", 20), // waits for the first account-a call
+    updateAccount("account-b", 30)  // independent of account-a
 ]);
 ```
 
 ## Mental model
 
-Charon uses three nested concepts:
-
-1. A **Charon ID** identifies the protected resource, such as an account ID,
-   document path, tenant, or cache key.
-2. A **transaction** temporarily owns that ID's lock. Transactions waiting for
-   the same lock are admitted in FIFO order.
-3. An **operation** is a callback queued inside the owning transaction.
-
 ```text
-Charon
-├── account-a → LockLimited
-│   ├── current transaction
-│   │   ├── operation 1
-│   │   └── operation 2
-│   └── waiting transactions
-└── account-b → LockLimited
-    └── independent transaction and operations
+Charon                       keyed collection
+├── account-a → Lock         one owner at a time
+│   ├── active transaction   owns the lock
+│   │   ├── operation 1      runs first
+│   │   └── operation 2      runs second
+│   └── waiting transactions FIFO
+└── account-b → Lock         independent of account-a
+
+Observer                     optional lifecycle policy
+└── TimeoutObserver          timers and recovery policy
 ```
 
-Calling `run()` creates a transaction containing one operation. Calling
-`runTx()` creates a transaction that may contain several operations. The
-lower-level `openTx()`, `runInTx()`, and `closeTx()` methods expose the same
-lifecycle manually.
+- `PromiseQueue` runs asynchronous callbacks one at a time.
+- `Lock` grants ownership to one transaction at a time.
+- A transaction (`tx`) owns the lock and has its own operation queue.
+- `Charon` maintains one independent `Lock` for each ID.
+- `Observer` reacts to lifecycle events without being part of the lock algorithm.
 
-## Choosing an API
+The key distinction is between a **transaction** and an **operation**:
 
-Use the highest-level method that fits the task:
+- `lock.run()` creates a short transaction containing one operation.
+- `lock.runTx()` creates a transaction that may contain several operations.
+- `lock.openTx()` exposes the transaction lifecycle manually.
 
-| Requirement | Recommended API |
+## Choosing the right level
+
+| Need | Use |
 | --- | --- |
-| Run one operation for one resource ID | `charon.run(id, operation)` |
-| Keep one resource locked across several operations | `charon.runTx(id, transaction)` |
-| Integrate ownership with an external lifecycle | `openTx` / `runInTx` / `closeTx` |
-| Protect one resource without an ID map | `LockLimited` or `LockUnlimited` |
-| Only serialize callbacks | `SerialQueue` |
-| Only coordinate ownership keys | `LockGate` |
+| Serialize work for many resource IDs | `Charon` + `charon.ensure(id)` |
+| Protect one resource | `Lock` |
+| Execute one protected operation | `lock.run()` |
+| Keep ownership across several operations | `lock.runTx()` |
+| Connect ownership to an external lifecycle | `lock.openTx()` |
+| Add time limits and automatic recovery | `TimeoutObserver` |
+| Add custom monitoring or lifecycle policy | Extend `Observer` |
+| Only serialize callbacks | `PromiseQueue` |
 
-For most application code, start with `Charon.run()` or `Charon.runTx()`.
+For normal application code, start with `charon.ensure(id).run(...)` or `lock.run(...)`.
 
-## Configuration
+## Lock
 
-`Charon` and every lock require `generateKey`. A transaction key is an opaque
-capability used to prove ownership when calling `checkTx`, `runInTx`,
-`touchTx`, or `closeTx`.
+A `Lock` serializes complete transactions. `generateKey` is the only required option.
 
 ```js
-let nextKey = 0;
+import { Lock } from "@randajan/charon";
 
-const locks = new Charon({
-    generateKey: () => ++nextKey,
-    throwError: false,
-    totalMs: 30_000,
-    opMs: 5_000,
-    idleMs: 1_000,
-    forceCloseMs: 500,
-    unref: false,
-    onClose(charon, event) {
-        console.log(event.id, event.hasNext, charon.size);
-    }
+const lock = new Lock({
+    generateKey: () => Symbol("transaction")
 });
 ```
 
-### `generateKey`
+### `lock.run(operation, options?)`
 
-```ts
-generateKey: () => TransactionKey
-```
-
-Required. Called whenever a transaction acquires a lock. Keys only need to be
-opaque and unique enough that stale callers cannot accidentally control the
-current transaction. A counter, symbol-producing function, or UUID generator
-is suitable.
-
-### `throwError`
-
-Defaults to `false`. When disabled, methods that target an unknown, expired,
-closing, or otherwise invalid transaction generally return `false`. When
-enabled, they throw instead.
-
-Most methods also accept `{ throwError }` per call. The per-call value overrides
-the lock configuration.
-
-When a Charon ID is completely absent, there is no lock configuration to
-consult. Pass `{ throwError: true }` directly to `get`, `has`, `checkTx`,
-`touchTx`, `runInTx`, or `closeTx` if a missing ID must throw.
+Creates a single-operation transaction, waits for ownership, runs the callback, and closes in a `finally` block.
 
 ```js
-const result = await locks.runInTx("account-a", staleKey, operation);
-console.log(result); // false
-
-await locks.runInTx("account-a", staleKey, operation, {
-    throwError: true
-}); // throws
-```
-
-### Timeout options
-
-Timeouts are available on `LockLimited` and `Charon`.
-
-| Option | Meaning | Timer begins or restarts |
-| --- | --- | --- |
-| `totalMs` | Maximum lifetime of the whole transaction | Once, when ownership is acquired |
-| `opMs` | Maximum duration of an operation | When an operation starts |
-| `idleMs` | Maximum time between operations | On open, `touchTx`, and after an operation |
-| `forceCloseMs` | Grace period between abort and automatic close | When the signal is aborted |
-
-Use `0` or omit a timeout to disable that limit. Timeout values must be finite,
-non-negative numbers no greater than `2 ** 31 - 1`.
-
-Transaction options override lock defaults:
-
-```js
-await locks.run("slow-report", buildReport, {
-    opMs: 60_000,
-    totalMs: 90_000
+const result = await lock.run(async tx => {
+    return performProtectedWork({ signal: tx.signal });
 });
 ```
 
-For an explicitly opened transaction, its resolved timeout values become the
-defaults for its operations. A particular `runInTx()` or `touchTx()` call may
-override the relevant `opMs` or `idleMs` again.
+The callback result becomes the result of `run()`. If it rejects, the transaction is still closed and the next waiting transaction can proceed. Multiple `run()` calls on one lock execute in submission order.
 
-### `unref`
+### `lock.runTx(transaction, options?)`
 
-Defaults to `false` in Charon. When `true`, supported runtimes call `unref()` on
-timeout handles, so Charon's timers alone do not keep an otherwise idle Node.js
-process alive.
-
-Use `unref: false` for short-lived processes that must remain alive until a
-timeout is delivered. This option has no effect in runtimes without timer
-handle `unref()` support.
-
-### `onClose`
-
-For `Charon`, the callback receives the collection and an event object:
+Keeps ownership for a callback containing several serialized operations:
 
 ```js
-const locks = new Charon({
-    generateKey,
-    onClose(charon, { lock, id, hasNext }) {
-        // hasNext is true when ownership immediately passed to a waiter.
-    }
+const result = await lock.runTx(async tx => {
+    const source = await tx.run(() => loadSource());
+    const transformed = await tx.run(() => transform(source));
+    await tx.run(() => saveResult(transformed));
+    return transformed;
 });
 ```
 
-For standalone locks, the signature is `(lock, hasNext)`.
-
-Callbacks run synchronously during close and are not awaited. Keep them small
-and do not throw from them. When a Charon lock closes without a waiting
-transaction, Charon removes it from its internal map automatically.
-
-## Abort and timeout behavior
-
-Timeouts abort the transaction's `AbortSignal`; they do not forcibly terminate
-JavaScript execution or automatically reject an operation.
+Operations may be submitted concurrently; the internal queue still executes them one at a time:
 
 ```js
-await locks.run("resource", async signal => {
-    const response = await fetch(url, { signal });
-    return response.json();
+await lock.runTx(async tx => {
+    const first = tx.run(stepOne);
+    const second = tx.run(stepTwo);
+    await Promise.all([first, second]);
 });
 ```
 
-Pass the signal to APIs that support cancellation, or inspect it explicitly:
+`runTx()` always calls `tx.close()` in a `finally` block. This is the safest multi-operation API.
+
+### Manual transactions
+
+Use `openTx()` only when ownership must outlive one callback or follow an external lifecycle:
 
 ```js
-await locks.run("resource", async signal => {
-    signal.throwIfAborted();
+const tx = await lock.openTx();
+
+try {
+    const value = await tx.run(() => loadValue());
+    await tx.run(() => saveValue(value));
+} finally {
+    await tx.close();
+}
+```
+
+Always await `close()`. It rejects new operations, waits for queued operations to settle, destroys the transaction, and transfers ownership to the next waiter.
+
+### Lock reference
+
+- `lock.state` is the current transaction state, or `"ready"` without an owner.
+- `lock.isState(state)` compares the current state.
+- `lock.size` is the number of transactions waiting for ownership. It does not include the active transaction.
+- `lock.getTx(key, throwError?)` returns the active public transaction matching `key`.
+- `lock.abortAll(reason?, options?)` aborts the active transaction and rejects all waiting transactions.
+
+`abortAll()` returns the number of waiting transactions removed from the queue; it does not count the active transaction. Aborting does not close the active transaction—close it explicitly or configure `forceCloseMs`.
+
+### Lock configuration
+
+| Option | Meaning |
+| --- | --- |
+| `generateKey` | Required function creating a non-null transaction key. |
+| `observer` | Optional `Observer`, such as `TimeoutObserver`. |
+| `throwError` | Throw on invalid transaction actions instead of returning `false`. Default: `false`. |
+| `onOpen(lock)` | Called when `openTx()` is requested. |
+| `onClose(lock, hasNext)` | Called after ownership is released. |
+
+Callbacks are synchronous and are not awaited. Their exceptions are suppressed.
+
+## Transaction API
+
+Every transaction callback receives a public `tx` object:
+
+```js
+tx.key       // ownership identifier
+tx.lock      // parent Lock
+tx.signal    // AbortSignal
+tx.state     // lifecycle state
+tx.size      // running + queued operations
+```
+
+Possible states are:
+
+| State | Meaning |
+| --- | --- |
+| `"pending"` | Created but waiting for ownership. |
+| `"idle"` | Owns the lock, with no active operation. |
+| `"busy"` | An operation is running. |
+| `"aborted"` | The transaction was aborted. |
+| `"closing"` | Close is waiting for operations. |
+| `"destroyed"` | Ownership was released. |
+
+### `tx.run(operation, options?)`
+
+Adds an operation to the transaction's FIFO queue. The operation receives the same transaction:
+
+```js
+const value = await tx.run(async currentTx => {
+    currentTx.signal.throwIfAborted();
+    return doWork();
+});
+```
+
+After abort or after closing begins, new operations are refused. With default non-throwing behavior, `tx.run()` resolves to `false`.
+
+### `tx.touch(options?)`
+
+Notifies the observer about activity while idle. `TimeoutObserver` uses this to restart `idleMs`.
+
+```js
+if (!tx.touch()) {
+    // Busy, aborted, closing, or destroyed.
+}
+```
+
+Touch is valid only in the `"idle"` state. Use `opMs` to limit active work.
+
+### `tx.abort(reason?, options?)`
+
+Aborts the transaction signal and rejects operations that are queued but have not started.
+
+```js
+tx.abort(new Error("cancelled by the owner"));
+```
+
+Without a reason, Charon creates `TxAbortError`. A custom `Error` is preserved exactly as `tx.signal.reason`.
+
+Abort is cooperative: the currently running callback is not forcibly interrupted. Pass `tx.signal` to cancellable APIs and inspect it during long work.
+
+```js
+await tx.run(async tx => {
+    tx.signal.throwIfAborted();
     await performStepOne();
-    signal.throwIfAborted();
+    tx.signal.throwIfAborted();
     await performStepTwo();
 });
 ```
 
-If an operation ignores the signal, it may continue after the timeout. Closing
-a lock waits for its queued operations to settle. Consequently,
-`forceCloseMs` releases abandoned idle transactions automatically, but cannot
-magically stop a running callback that ignores cancellation.
+Abort does not release ownership. It must be followed by `close()`, manually or through a timeout policy.
 
-### Abort reason
+### `tx.close(options?)`
 
-Charon aborts with a structured value in `signal.reason`:
+Moves the transaction to `"closing"`, refuses further operations, waits for the queue to drain, then releases the lock.
 
 ```js
-{
-    trigger: "soft",          // "soft" or "hard"
-    log: ["idle", "touch"]   // transaction activity
-}
+await tx.close();
 ```
 
-- `trigger: "hard"` means `totalMs` expired.
-- `trigger: "soft"` means the active `opMs` or `idleMs` limit expired.
-- `log` records activity as `"idle"`, `"touch"`, and `"op"` entries.
+If a running operation never settles, `close()` also remains pending. `forceKillMs` exists for this recovery case.
 
-The exact log is useful for diagnostics, but application logic should usually
-react to `signal.aborted` and `trigger`, not depend on a specific log length.
+### `tx.kill(options?)`
 
-## Charon API
+Immediately detaches a transaction that is both aborted and closing. The required order is:
 
-### `new Charon(config)`
-
-Creates an initially empty keyed lock collection. Locks are created lazily by
-`run`, `runTx`, and `openTx`.
-
-```js
-const documents = new Charon({
-    generateKey: () => Symbol("document transaction"),
-    idleMs: 1_000
-});
+```text
+abort → close → kill
 ```
 
-### `charon.size`
-
-Number of IDs that currently have an active or waiting transaction. Finished
-locks with no waiters are removed automatically.
-
-### `charon.run(id, operation, options?)`
-
-Acquires the ID's lock, runs one operation, and releases the lock in a
-`finally` block.
-
 ```js
-const result = await documents.run(documentId, async signal => {
-    return updateDocument(documentId, { signal });
-});
+tx.abort(new Error("operation is stuck"));
+const closing = tx.close();
+
+// If close cannot finish:
+tx.kill();
+void closing;
 ```
 
-The returned Promise resolves with the operation result or rejects with its
-error. A rejected operation still releases the lock, allowing the next
-transaction to continue.
+Calling `kill()` before abort or close returns `false` by default. Kill releases the **lock**, not the JavaScript operation. The old operation may continue and overlap the next transaction, so kill is a last-resort availability mechanism.
 
-### `charon.runTx(id, transaction, options?)`
+### Invalid actions and `throwError`
 
-Acquires the ID's lock for a callback that may execute several serialized
-operations. The callback receives a transaction-bound `run` function and the
-shared abort signal.
+By default, an invalid lifecycle action returns `false` (or `undefined` from `getTx`) instead of throwing. Set `throwError: true` on the lock or a call when invalid usage should fail loudly.
 
 ```js
-const result = await documents.runTx(documentId, async (run, signal) => {
-    const document = await run(() => loadDocument(documentId, { signal }));
-
-    const updated = await run(() => {
-        signal.throwIfAborted();
-        return applyChanges(document);
-    });
-
-    await run(() => saveDocument(updated, { signal }), {
-        opMs: 10_000
-    });
-
-    return updated;
-});
-```
-
-Operations submitted through `run` execute in order. The transaction retains
-ownership between them. `runTx` always attempts to close the transaction,
-including when the callback rejects.
-
-The bound `run` can technically be called concurrently; the internal queue
-still serializes the callbacks:
-
-```js
-await documents.runTx(documentId, async run => {
-    const first = run(stepOne);
-    const second = run(stepTwo);
-    await Promise.all([first, second]); // stepTwo starts after stepOne settles
-});
-```
-
-### Manual transactions
-
-Prefer `runTx` unless ownership must outlive one callback. Manual transactions
-must always close in a `finally` block.
-
-```js
-const { key, signal } = await documents.openTx(documentId, {
-    totalMs: 30_000,
-    idleMs: 2_000
+const lock = new Lock({
+    generateKey: () => Symbol(),
+    throwError: true
 });
 
-try {
-    const document = await documents.runInTx(
-        documentId,
-        key,
-        () => loadDocument(documentId, { signal })
-    );
-
-    await documents.runInTx(
-        documentId,
-        key,
-        () => saveDocument(document, { signal })
-    );
-} finally {
-    await documents.closeTx(documentId, key);
-}
+await tx.run(operation, { throwError: false }); // per-call override
 ```
 
-Always `await closeTx()`. Closing waits for operations already queued in the
-transaction before transferring ownership to the next waiter.
+Errors thrown by user operations are never suppressed.
 
-### `charon.openTx(id, options?)`
+## Charon: locks grouped by ID
 
-Waits until the ID is available, starts its timeout lifecycle, and resolves to:
-
-```js
-{
-    key,     // opaque value created by generateKey
-    signal   // shared AbortSignal for the transaction
-}
-```
-
-### `charon.runInTx(id, key, operation, options?)`
-
-Queues an operation in an existing transaction. Operations in that transaction
-are serialized. Resolves to the callback result, or `false` when the ID or key
-is invalid and throwing is disabled.
-
-It does not create a missing lock or transaction.
-
-### `charon.touchTx(id, key, options?)`
-
-Restarts the idle timeout while an existing transaction is idle. Returns
-`true` on success and `false` for an invalid, expired, or busy transaction when
-throwing is disabled.
+`Charon` is a lifecycle-aware map of `Lock` instances.
 
 ```js
-if (!documents.touchTx(documentId, key)) {
-    // Ownership was lost, the transaction expired, or it is currently busy.
-}
-```
-
-Do not call `touchTx` during a running operation. Operation time is controlled
-by `opMs`; `touchTx` is specifically an idle keep-alive.
-
-### `charon.closeTx(id, key, options?)`
-
-Stops timers, waits for queued operations, and releases ownership. Resolves to
-`true` when the transaction closed. If the ID does not exist, it returns
-`false` directly; using `await` handles both forms naturally.
-
-### `charon.checkTx(id, key, options?)`
-
-Returns whether `key` owns the ID's current live transaction. Returns `false`
-for a missing ID or invalid key unless throwing is enabled.
-
-### `charon.get(id, options?)`
-
-Returns the currently managed `LockLimited`, or `undefined` if that ID has no
-active lock. This method does not create a lock.
-
-```js
-const lock = documents.get(documentId);
-```
-
-With `{ throwError: true }`, a missing ID throws instead.
-
-### `charon.has(id, options?)`
-
-Returns whether Charon currently manages a lock for the ID. Like `get`, it does
-not create one.
-
-## Standalone locks
-
-### `LockLimited`
-
-Use `LockLimited` when only one resource needs protection but timeout handling
-is still required. Its transaction API is the same as the corresponding
-Charon methods, without the leading ID.
-
-```js
-const lock = new LockLimited({
+const resources = new Charon({
     generateKey: () => Symbol("transaction"),
-    opMs: 5_000,
-    idleMs: 1_000,
-    totalMs: 15_000
-});
-
-const value = await lock.run(async signal => {
-    return performProtectedWork({ signal });
-});
-
-const transactionValue = await lock.runTx(async (run, signal) => {
-    const first = await run(() => firstStep({ signal }));
-    return run(() => secondStep(first, { signal }));
+    retainMs: 60_000
 });
 ```
 
-Important properties and methods:
+### Creating and finding locks
 
-- `state` is `"ready"`, `"idle"`, or `"busy"`.
-- `size` is the number of transactions waiting to acquire the lock.
-- `isState(state)` tests the current state.
-- `run`, `runTx`, `openTx`, `runInTx`, `touchTx`, `checkTx`, and `closeTx`
-  behave as described above.
-- `cfg` exposes the normalized, frozen configuration.
-
-### `LockUnlimited`
-
-`LockUnlimited` provides the same exclusive transaction and serialized
-operation model without timeout contexts or abort signals.
+`charon.ensure(id)` returns an existing lock or creates it lazily:
 
 ```js
-const lock = new LockUnlimited({
-    generateKey: () => Symbol("transaction")
-});
-
-await lock.run(async () => {
-    await performProtectedWork();
-});
-
-await lock.runTx(async run => {
-    const first = await run(firstStep);
-    await run(() => secondStep(first));
-});
+const documentLock = resources.ensure(documentId);
+await documentLock.run(tx => updateDocument(documentId, tx.signal));
 ```
 
-`openTx()` resolves directly to the key rather than `{ key, signal }`.
+This explicit `ensure(id) → Lock` design keeps all transaction behavior on `Lock` and `tx`, rather than duplicating it as ID-prefixed proxy methods.
+
+- `charon.get(id, options?)` returns an existing lock without creating one.
+- `charon.has(id, options?)` reports whether a lock is currently retained.
+- A missing ID returns `undefined`/`false`, or throws with `{ throwError: true }`.
+- `charon.size` is the number of retained lock instances.
+
+`has(id)` says nothing about the underlying account, file, or database record.
+
+### Iteration
+
+Charon can be inspected like a map:
 
 ```js
-const key = await lock.openTx();
-
-try {
-    await lock.runInTx(key, operation);
-} finally {
-    await lock.closeTx(key);
+for (const [id, lock] of resources) {
+    console.log(id, lock.state, lock.size);
 }
+
+resources.keys();
+resources.values();
+resources.entries();
 ```
 
-When closing begins, the lock rejects new operations for that transaction and
-waits for operations already in its queue.
+### Retention and cleanup
 
-### `LockGate`
-
-`LockGate` is the ownership primitive below the operation locks. It does not
-execute callbacks. It only grants keys, queues ownership requests, validates
-the current key, and transfers ownership on close.
+When a lock becomes ready without a waiter, Charon retains it for `retainMs` and then removes it. The default is `60_000` ms. Reusing it before cleanup cancels removal.
 
 ```js
-const gate = new LockGate({
-    generateKey: () => Symbol("owner")
+const resources = new Charon({
+    generateKey,
+    retainMs: 5_000,
+    unref: true
 });
+```
 
-const key = await gate.openTx();
+`unref: true` prevents a supported Node.js cleanup timer from keeping the process alive by itself.
 
-try {
-    if (gate.checkTx(key)) {
-        // This caller still owns the gate.
+### Charon callbacks
+
+```js
+const resources = new Charon({
+    generateKey,
+
+    onOpen(charon, { id, lock }) {
+        console.log("opened", id);
+    },
+
+    onClose(charon, { id, lock, hasNext }) {
+        console.log("closed", id, { hasNext });
     }
+});
+```
+
+Callbacks are synchronous, are not awaited, and their exceptions are suppressed by the lock.
+
+## TimeoutObserver
+
+Timeout handling is an optional export:
+
+```js
+import { Lock } from "@randajan/charon";
+import TimeoutObserver from "@randajan/charon/obs/timed";
+
+const lock = new Lock({
+    generateKey: () => Symbol(),
+    observer: new TimeoutObserver({
+        totalMs: 30_000,
+        opMs: 5_000,
+        idleMs: 1_000,
+        forceCloseMs: 500,
+        forceKillMs: 500,
+        unref: false
+    })
+});
+```
+
+### Timeout options
+
+| Option | Meaning |
+| --- | --- |
+| `totalMs` | Maximum lifetime of a multi-operation transaction. |
+| `opMs` | Maximum duration of one operation. |
+| `idleMs` | Maximum idle period before or between operations. |
+| `forceCloseMs` | Delay from abort to automatic `close()`. |
+| `forceKillMs` | Delay from the start of close to automatic `kill()`. |
+| `unref` | Do not keep Node.js alive solely because of observer timers. |
+
+Omit a limit or use `0` to disable it. Defaults belong to the observer. Transaction options override the defaults, and operation options can override `opMs` and the following `idleMs`:
+
+```js
+const tx = await lock.openTx({
+    totalMs: 60_000,
+    idleMs: 5_000
+});
+
+try {
+    await tx.run(operation, {
+        opMs: 20_000,
+        idleMs: 10_000
+    });
 } finally {
-    gate.closeTx(key); // synchronous for LockGate itself
+    await tx.close();
 }
 ```
 
-For `LockGate`:
+### Single and multi-operation timing
 
-- `state` is a boolean indicating whether the gate is owned.
-- `size` is the number of waiting owners.
-- `openTx()` resolves to the generated key.
-- `closeTx()` is synchronous and returns a boolean.
+`TimeoutObserver` selects a context using `singleOp`:
 
-## SerialQueue
+- `lock.run()` automatically enables `singleOp` and uses `SingleTimeoutContext`.
+- `openTx()` and `runTx()` normally use `MultiTimeoutContext`.
 
-`SerialQueue` is independent of transaction ownership. It executes callbacks
-one at a time in insertion order.
+The single-operation context needs one effective timer. The multi-operation context tracks total lifetime independently while operation and idle limits restart as activity changes. This distinction is normally internal.
+
+### Timeout reasons and logs
+
+An expired limit aborts the signal with `TxTimeoutError`:
 
 ```js
-const queue = new SerialQueue();
+tx.signal.addEventListener("abort", () => {
+    const reason = tx.signal.reason;
 
-const first = queue.add(async () => {
+    console.log(reason.code); // "total", "op", or "idle"
+    console.log(reason.ms);   // configured limit
+    console.log(reason.log);  // activity records
+}, { once: true });
+```
+
+Each log record has this shape:
+
+```js
+{
+    status: "idle" | "touch" | "op",
+    ms: 1_000,
+    ts: 1760000000000
+}
+```
+
+The log is diagnostic. Application logic should primarily use `signal.aborted`, `reason.code`, and `reason.ms`. When `tx.abort()` creates the default `TxAbortError`, `TimeoutObserver` attaches the activity log. A custom abort error remains untouched.
+
+### Automatic recovery
+
+```text
+totalMs / opMs / idleMs expires
+              │
+              ▼
+            abort
+              │ forceCloseMs
+              ▼
+            close
+              │ forceKillMs
+              ▼
+             kill
+              │
+              ▼
+      next transaction acquires the lock
+```
+
+- Abort requests cooperative cancellation and removes queued operations.
+- Close waits for the running operation to settle.
+- Kill releases the lock if close remains stuck.
+
+`forceKillMs` starts only after closing begins. Automatic forced release therefore normally needs both `forceCloseMs` and `forceKillMs`; alternatively application code can call `close()` after abort.
+
+## Errors
+
+Library-specific errors derive from `CharonError` and carry a short `code`.
+
+| Error | Typical code | Meaning |
+| --- | --- | --- |
+| `CharonError` | any string | Common base class. |
+| `TxError` | any string | Transaction error with an activity `log`. |
+| `TxTimeoutError` | `"total"`, `"op"`, `"idle"` | Timeout error with `ms` and `log`. |
+| `TxAbortError` | `"manual"` | Default reason created by `tx.abort()`. |
+| `PendingAbortError` | `"operations"`, `"transactions"` | Pending queue entries were removed. |
+
+```js
+import { TxTimeoutError } from "@randajan/charon";
+
+if (tx.signal.reason instanceof TxTimeoutError) {
+    console.error(tx.signal.reason.code, tx.signal.reason.ms);
+}
+```
+
+## Custom observers
+
+Extend `Observer` to add metrics, tracing, auditing, or another policy:
+
+```js
+import { Lock, Observer } from "@randajan/charon";
+
+class MetricsObserver extends Observer {
+    createTxCtx(tx, options) {
+        return {
+            createdAt: Date.now(),
+            operationCount: 0,
+            options
+        };
+    }
+
+    createOpCtx(tx, txCtx, options) {
+        return { txCtx, startedAt: undefined, options };
+    }
+
+    onStartOp(tx, opCtx) {
+        opCtx.txCtx.operationCount++;
+        opCtx.startedAt = Date.now();
+    }
+
+    onEndOp(tx, opCtx) {
+        recordOperationDuration(Date.now() - opCtx.startedAt);
+    }
+
+    onDestroy(tx, txCtx) {
+        recordTransaction({
+            duration: Date.now() - txCtx.createdAt,
+            operations: txCtx.operationCount
+        });
+    }
+}
+
+const lock = new Lock({
+    generateKey: () => Symbol(),
+    observer: new MetricsObserver({ service: "billing" })
+});
+```
+
+The constructor stores a frozen shallow copy in `observer.opt`. `createTxCtx()` creates data shared by one transaction; `createOpCtx()` creates data for one operation.
+
+Lifecycle hooks are:
+
+```text
+onCreate → onOpen → onAddOp → onStartOp → onEndOp
+                  ↘ onTouch
+                  ↘ onAbort → onClosing → onDestroy
+```
+
+Hook return values are ignored and hook exceptions are suppressed so monitoring code cannot break cleanup. Errors from `createTxCtx()` or `createOpCtx()` may propagate, so context factories should remain small and deterministic.
+
+The timed context classes are exported for advanced extensions, but most users only need `TimeoutObserver`.
+
+## PromiseQueue
+
+`PromiseQueue` is the low-level FIFO queue used by transactions and can be used independently.
+
+```js
+const queue = new PromiseQueue();
+
+const first = queue.run(async () => {
     await writePartOne();
     return 1;
 });
 
-const second = queue.add(async () => {
+const second = queue.run(async () => {
     await writePartTwo();
     return 2;
 });
 
-console.log(await first);  // 1
-console.log(await second); // 2
+console.log(await Promise.all([first, second])); // [1, 2]
 await queue.drain();
 ```
 
-- `add(callback)` returns a Promise for that callback's result.
-- `drain()` waits until the current queue becomes empty.
-- `size` includes the running callback and queued callbacks.
-- `idle` is `true` when `size === 0`.
-- A rejected callback rejects its own Promise but does not block later work.
-
-## State and return-value reference
-
-### Lock states
-
-| State | Meaning |
-| --- | --- |
-| `"ready"` | No transaction owns the lock. |
-| `"idle"` | A transaction owns it, with no operation currently queued or running. |
-| `"busy"` | The owning transaction has queued or running operations. |
-
-### Invalid transaction behavior
-
-| Method | Default result when invalid | With `throwError: true` |
-| --- | --- | --- |
-| `get` | `undefined` | Throws |
-| `checkTx` | `false` | Throws |
-| `touchTx` | `false` | Throws |
-| `runInTx` | Promise resolving to `false` | Rejects |
-| `closeTx` | `false` or Promise resolving to `false` | Throws or rejects |
-
-High-level `run`, `runTx`, and `openTx` create or wait for valid ownership and
-therefore do not use `false` as their normal result.
-
-## Practical patterns
-
-### Prevent duplicate writes for one entity
-
-```js
-const entities = new Charon({
-    generateKey: () => Symbol(),
-    opMs: 10_000
-});
-
-export const updateEntity = (id, patch) => entities.run(id, async signal => {
-    const entity = await repository.get(id, { signal });
-    Object.assign(entity, patch);
-    await repository.save(entity, { signal });
-    return entity;
-});
-```
-
-Calls for one `id` serialize; unrelated entities are not globally blocked.
-
-### Keep a transaction alive between externally driven steps
-
-```js
-const tx = await entities.openTx(id, { idleMs: 5_000 });
-
-try {
-    await waitForExternalStep();
-    tx.signal.throwIfAborted();
-    entities.touchTx(id, tx.key);
-
-    await entities.runInTx(id, tx.key, signal => {
-        return applyExternalStep({ signal });
-    });
-} finally {
-    await entities.closeTx(id, tx.key);
-}
-```
-
-For a lifecycle contained in one callback, `runTx` is simpler and safer.
-
-### Observe abort without relying on a cancellable API
-
-```js
-const aborted = signal => {
-    if (signal.aborted) { return Promise.resolve(signal.reason); }
-
-    return new Promise(resolve => {
-        signal.addEventListener(
-            "abort",
-            () => resolve(signal.reason),
-            { once: true }
-        );
-    });
-};
-
-const reason = await locks.run("resource", signal => aborted(signal), {
-    opMs: 100
-});
-
-console.log(reason.trigger); // "soft"
-```
+- `size` includes the running and queued callbacks.
+- `state` is `"idle"` or `"busy"`.
+- `drain()` waits for the queue to become empty.
+- `abort(reason?)` rejects queued callbacks and returns their count.
+- The running callback is not stopped by `abort()`.
+- A rejected callback does not block later callbacks.
 
 ## Common mistakes
 
-### Forgetting to close a manual transaction
+- **Assuming abort stops JavaScript:** it only signals cancellation.
+- **Forgetting to close:** wrap manual transactions in `try/finally`.
+- **Using kill normally:** it may let old and new work overlap.
+- **Calling `touch()` while busy:** touch is only an idle keep-alive.
+- **Expecting methods directly on Charon:** resolve a `Lock` with `ensure(id)` first.
+- **Treating `has(id)` as a domain lookup:** it only describes retained locks.
+- **Acquiring several IDs inconsistently:** use a deterministic order to avoid deadlocks.
 
-An unclosed transaction retains ownership indefinitely unless a timeout and
-`forceCloseMs` eventually release it. Always use `try/finally` and await close.
+## Runtime guarantees
 
-### Treating abort as forced termination
-
-Abort is cooperative. Forward the signal to I/O APIs and check it during
-long-running application code.
-
-### Calling `touchTx` while busy
-
-`touchTx` is an idle keep-alive. It returns `false` or throws while operations
-are active. Configure or override `opMs` for active work.
-
-### Using one global lock for unrelated resources
-
-A standalone lock serializes everything sent to it. Use `Charon` when the work
-has natural IDs and independent IDs should remain concurrent.
-
-### Assuming `Charon.has(id)` means the resource exists
-
-It only reports whether Charon currently manages an active lock for that ID.
-It says nothing about the underlying database record, file, or remote object.
-
-### Starting multi-ID transactions without a lock order
-
-Charon coordinates each ID independently; it does not provide an atomic
-multi-ID transaction primitive. Acquiring several IDs manually in inconsistent
-orders can deadlock. If multiple-resource locking is necessary, define and
-enforce one deterministic acquisition order at the application level.
-
-## Runtime characteristics
-
-- Work for one lock is FIFO.
+- Waiting transactions acquire one lock in FIFO order.
+- Operations inside a transaction run in FIFO order.
 - Different Charon IDs remain concurrent.
-- Errors do not poison an operation queue.
-- Completed Charon locks are removed when they have no waiter.
-- No JavaScript callback is forcibly interrupted.
-- The package has no background worker; progress happens through Promises and
-  configured timers.
+- Rejected operations do not poison their queue.
+- User errors and custom abort reasons are preserved.
+- No callback is forcibly terminated.
+- Observers may automate recovery without changing the lock primitive.
 
 ## License
 
