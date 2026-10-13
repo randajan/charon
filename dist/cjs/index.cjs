@@ -470,7 +470,10 @@ var Lock = class {
   }
   abortAll(reason, opt) {
     reason ??= new PendingAbortError("transactions");
-    this.#tx?.abort(reason, opt);
+    try {
+      !this.#tx?.abort(reason, opt);
+    } catch {
+    }
     const queue = this.#queue.splice(0);
     for (const { reject, tx } of queue) {
       tx.destroy();

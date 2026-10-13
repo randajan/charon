@@ -1,0 +1,7 @@
+{
+  "version": 3,
+  "sources": ["../../src/queue.js"],
+  "sourcesContent": ["import { PromiseQueue } from \"./base/queue/PromiseQueue\";\n\n\nexport default PromiseQueue;\n\nexport {\n    PromiseQueue\n}"],
+  "mappings": ";;;;;;AAGA,IAAO,gBAAQ;",
+  "names": []
+}

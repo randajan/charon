@@ -16,6 +16,11 @@
       "import": "./dist/esm/index.mjs",
       "require": "./dist/cjs/index.cjs"
     },
+    "./queue": {
+      "types": "./dist/types/queue.d.ts",
+      "import": "./dist/esm/queue.mjs",
+      "require": "./dist/cjs/queue.cjs"
+    },
     "./obs/timed": {
       "types": "./dist/types/obs/timed/index.d.ts",
       "import": "./dist/esm/obs/timed/index.mjs",

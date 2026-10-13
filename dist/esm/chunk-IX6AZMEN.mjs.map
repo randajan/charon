@@ -1,0 +1,7 @@
+{
+  "version": 3,
+  "sources": ["../../src/base/observers/Observer.js"],
+  "sourcesContent": ["export class Observer {\n\n    #opt;\n\n    constructor(opt = {}) {\n        this.#opt = Object.freeze({ ...opt });\n    }\n\n    get opt() { return this.#opt; }\n\n    createTxCtx(tx, opt) {\n        return opt;\n    }\n\n    createOpCtx(tx, ctx, opt) {\n        return {ctx, opt};\n    }\n\n    onCreate(tx, ctx) {}\n    onOpen(tx, ctx) {}\n\n    onTouch(tx, ctx, opt) {}\n\n    onAddOp(tx, opCtx) {}\n    onStartOp(tx, opCtx) {}\n    onEndOp(tx, opCtx) {}\n\n    onAbort(tx, ctx, opt) {}\n\n    onClosing(tx, ctx, opt) {}\n    onDestroy(tx, ctx) {}\n\n}\n"],
+  "mappings": ";AAAO,IAAM,WAAN,MAAe;AAAA,EAElB;AAAA,EAEA,YAAY,MAAM,CAAC,GAAG;AAClB,SAAK,OAAO,OAAO,OAAO,EAAE,GAAG,IAAI,CAAC;AAAA,EACxC;AAAA,EAEA,IAAI,MAAM;AAAE,WAAO,KAAK;AAAA,EAAM;AAAA,EAE9B,YAAY,IAAI,KAAK;AACjB,WAAO;AAAA,EACX;AAAA,EAEA,YAAY,IAAI,KAAK,KAAK;AACtB,WAAO,EAAC,KAAK,IAAG;AAAA,EACpB;AAAA,EAEA,SAAS,IAAI,KAAK;AAAA,EAAC;AAAA,EACnB,OAAO,IAAI,KAAK;AAAA,EAAC;AAAA,EAEjB,QAAQ,IAAI,KAAK,KAAK;AAAA,EAAC;AAAA,EAEvB,QAAQ,IAAI,OAAO;AAAA,EAAC;AAAA,EACpB,UAAU,IAAI,OAAO;AAAA,EAAC;AAAA,EACtB,QAAQ,IAAI,OAAO;AAAA,EAAC;AAAA,EAEpB,QAAQ,IAAI,KAAK,KAAK;AAAA,EAAC;AAAA,EAEvB,UAAU,IAAI,KAAK,KAAK;AAAA,EAAC;AAAA,EACzB,UAAU,IAAI,KAAK;AAAA,EAAC;AAExB;",
+  "names": []
+}

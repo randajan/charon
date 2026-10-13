@@ -25,7 +25,7 @@ Timeout behavior is not hard-wired into the lock. It is provided by a separate o
 npm install @randajan/charon
 ```
 
-The package has two public entry points:
+The package has three public entry points:
 
 ```js
 import Charon, {
@@ -34,6 +34,9 @@ import Charon, {
     PromiseQueue
 } from "@randajan/charon";
 
+// Minimal entry point when only the queue is needed:
+import Queue from "@randajan/charon/queue";
+
 import TimeoutObserver, {
     MultiTimeoutContext,
     SingleTimeoutContext,
@@ -41,7 +44,7 @@ import TimeoutObserver, {
 } from "@randajan/charon/obs/timed";
 ```
 
-`Charon` and `TimeoutObserver` are available as both default and named exports from their respective entry points.
+`Charon`, `PromiseQueue`, and `TimeoutObserver` are available as both default and named exports from their respective entry points. The smaller `@randajan/charon/queue` entry point exports only `PromiseQueue` and avoids loading the lock and collection layers.
 
 ## Quick start
 

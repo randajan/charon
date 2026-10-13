@@ -1,5 +1,5 @@
 // <define:__slib_info>
-var define_slib_info_default = { isBuild: true, name: "@randajan/charon", description: "Lightweight asynchronous locks and keyed transaction queues for JavaScript", version: "2.0.0", author: { name: "Jan Randa", email: "jnranda@gmail.com", url: "https://www.linkedin.com/in/randajan/" }, env: "development", mode: "node", port: 3e3, dir: { root: "/home/randajan/dev/lib/charon", dist: "demo/dist" } };
+var define_slib_info_default = { isBuild: true, name: "@randajan/charon", description: "Lightweight asynchronous locks and keyed transaction queues for JavaScript", version: "2.1.0", author: { name: "Jan Randa", email: "jnranda@gmail.com", url: "https://www.linkedin.com/in/randajan/" }, env: "development", mode: "node", port: 3e3, dir: { root: "/home/randajan/dev/lib/charon", dist: "demo/dist" } };
 
 // node_modules/chalk/source/vendor/ansi-styles/index.js
 var ANSI_BACKGROUND_OFFSET = 10;
@@ -450,7 +450,7 @@ process.on("uncaughtException", (e) => {
 // demo/src/index.js
 import assert from "assert/strict";
 
-// dist/esm/chunk-27B7V7QV.mjs
+// dist/esm/chunk-BC43357E.mjs
 var TIMEOUT_MESSAGES = {
   total: "Transaction exceeded totalMs",
   op: "Operation exceeded opMs",
@@ -486,42 +486,8 @@ var PendingAbortError = class extends CharonError {
     super(code, `Pending ${code} were aborted`);
   }
 };
-var Observer = class {
-  #opt;
-  constructor(opt = {}) {
-    this.#opt = Object.freeze({ ...opt });
-  }
-  get opt() {
-    return this.#opt;
-  }
-  createTxCtx(tx, opt) {
-    return opt;
-  }
-  createOpCtx(tx, ctx, opt) {
-    return { ctx, opt };
-  }
-  onCreate(tx, ctx) {
-  }
-  onOpen(tx, ctx) {
-  }
-  onTouch(tx, ctx, opt) {
-  }
-  onAddOp(tx, opCtx) {
-  }
-  onStartOp(tx, opCtx) {
-  }
-  onEndOp(tx, opCtx) {
-  }
-  onAbort(tx, ctx, opt) {
-  }
-  onClosing(tx, ctx, opt) {
-  }
-  onDestroy(tx, ctx) {
-  }
-};
 
-// dist/esm/index.mjs
-import { setTimeoutUnref, validateTimeout } from "@randajan/bounce";
+// dist/esm/chunk-UMPARWUH.mjs
 var PromiseQueue = class {
   #queue = [];
   #running = false;
@@ -579,6 +545,44 @@ var PromiseQueue = class {
     }
   }
 };
+
+// dist/esm/chunk-IX6AZMEN.mjs
+var Observer = class {
+  #opt;
+  constructor(opt = {}) {
+    this.#opt = Object.freeze({ ...opt });
+  }
+  get opt() {
+    return this.#opt;
+  }
+  createTxCtx(tx, opt) {
+    return opt;
+  }
+  createOpCtx(tx, ctx, opt) {
+    return { ctx, opt };
+  }
+  onCreate(tx, ctx) {
+  }
+  onOpen(tx, ctx) {
+  }
+  onTouch(tx, ctx, opt) {
+  }
+  onAddOp(tx, opCtx) {
+  }
+  onStartOp(tx, opCtx) {
+  }
+  onEndOp(tx, opCtx) {
+  }
+  onAbort(tx, ctx, opt) {
+  }
+  onClosing(tx, ctx, opt) {
+  }
+  onDestroy(tx, ctx) {
+  }
+};
+
+// dist/esm/index.mjs
+import { setTimeoutUnref, validateTimeout } from "@randajan/bounce";
 var TxPublic = class {
   #tx;
   constructor(txContext) {
@@ -879,7 +883,10 @@ var Lock = class {
   }
   abortAll(reason, opt) {
     reason ??= new PendingAbortError("transactions");
-    this.#tx?.abort(reason, opt);
+    try {
+      !this.#tx?.abort(reason, opt);
+    } catch {
+    }
     const queue = this.#queue.splice(0);
     for (const { reject, tx } of queue) {
       tx.destroy();
