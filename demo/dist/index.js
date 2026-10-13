@@ -1,5 +1,5 @@
 // <define:__slib_info>
-var define_slib_info_default = { isBuild: true, name: "@randajan/charon", description: "Lightweight asynchronous locks and keyed transaction queues for JavaScript", version: "2.1.0", author: { name: "Jan Randa", email: "jnranda@gmail.com", url: "https://www.linkedin.com/in/randajan/" }, env: "development", mode: "node", port: 3e3, dir: { root: "/home/randajan/dev/lib/charon", dist: "demo/dist" } };
+var define_slib_info_default = { isBuild: true, name: "@randajan/charon", description: "Lightweight asynchronous locks and keyed transaction queues for JavaScript", version: "2.1.1", author: { name: "Jan Randa", email: "jnranda@gmail.com", url: "https://www.linkedin.com/in/randajan/" }, env: "development", mode: "node", port: 3e3, dir: { root: "/home/randajan/dev/lib/charon", dist: "demo/dist" } };
 
 // node_modules/chalk/source/vendor/ansi-styles/index.js
 var ANSI_BACKGROUND_OFFSET = 10;
